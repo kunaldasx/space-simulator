@@ -89,19 +89,6 @@ html_content = """<!DOCTYPE html>
     flex:1; display:flex; flex-direction:column;
     align-items:center; justify-content:flex-end;
     position:relative; width:100%; overflow:hidden;
-    touch-action:none; -webkit-user-select:none; user-select:none;
-  }
-
-  /* Large transparent mobile drag zone. This avoids relying on the tiny rocket as the only touch target. */
-  #launchTouchZone {
-    position:absolute;
-    left:50%; transform:translateX(-50%);
-    bottom:calc(22vh + 2px);
-    width:min(220px,70vw); height:190px;
-    z-index:40;
-    background:transparent;
-    touch-action:none;
-    cursor:grab;
   }
   .ground {
     position:absolute; bottom:0; left:0; right:0;
@@ -122,11 +109,9 @@ html_content = """<!DOCTYPE html>
     left:50%; transform:translateX(-50%);
     display:flex; flex-direction:column; align-items:center;
     cursor:grab; touch-action:none; user-select:none;
-    -webkit-user-select:none; -webkit-touch-callout:none;
     z-index:20;
     transition: filter .2s;
   }
-  /* decorative rocket remains visible; actual mobile drag is handled by #launchTouchZone */
   #rocketWrap:active { cursor:grabbing; }
   #rocketWrap.launching {
     animation:liftoff 3s ease-in forwards;
@@ -378,7 +363,7 @@ html_content = """<!DOCTYPE html>
 <div id="zoomOverlay"></div>
 
 <!-- SCENE 1: LAUNCH -->
-<div class="scene" id="scene-launch">
+<div class="scene hidden" id="scene-launch">
   <div class="launch-title">
     <h1>KNOWN SPACE</h1>
     <p>A journey through the observable universe</p>
@@ -399,14 +384,13 @@ html_content = """<!DOCTYPE html>
       <div class="rocket-body"></div>
       <div class="rocket-flame-idle" id="idleFlame"></div>
     </div>
-    <div id="launchTouchZone" aria-label="Pull down to launch"></div>
 
     <div class="smoke-ring" id="smoke"></div>
   </div>
 </div>
 
 <!-- SCENE 2: SPACE -->
-<div class="scene hidden" id="scene-space">
+<div class="scene" id="scene-space">
   <div class="earth-globe"></div>
   <div class="shuttle-float">🚀</div>
   <div class="prompt-card">
@@ -471,7 +455,6 @@ for (let i=0;i<180;i++){
 
 /* ── DRAG TO LAUNCH ── */
 const rocketWrap  = document.getElementById('rocketWrap');
-const launchTouchZone = document.getElementById('launchTouchZone');
 const chargeWrap  = document.getElementById('chargeWrap');
 const chargeFill  = document.getElementById('chargeFill');
 const idleFlame   = document.getElementById('idleFlame');
@@ -479,43 +462,23 @@ const smokeEl     = document.getElementById('smoke');
 
 const PULL_THRESHOLD = 90;   // px pulled down = 100% charge
 let dragging = false, launched = false;
-let startY = 0, currentPull = 0, activePointerId = null;
+let startY = 0, currentPull = 0;
 
-function getClientY(e){
-  if (e.touches && e.touches.length) return e.touches[0].clientY;
-  if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0].clientY;
-  return e.clientY;
-}
+function getY(e){ return e.touches ? e.touches[0].clientY : e.clientY; }
 
-function safePrevent(e){
-  if (e && e.cancelable) e.preventDefault();
-}
-
-function beginLaunchDrag(e){
-  if (launched || dragging) return;
-  safePrevent(e);
-
-  dragging = true;
-  activePointerId = e.pointerId ?? null;
-  startY = getClientY(e);
-  currentPull = 0;
-
-  // Critical on phones: keep receiving move/end events even if the finger leaves the small rocket.
-  if (e.pointerId !== undefined && launchTouchZone.setPointerCapture) {
-    try { launchTouchZone.setPointerCapture(e.pointerId); } catch (_) {}
-  }
-
+function onDragStart(e){
+  if (launched) return;
+  dragging = true; startY = getY(e);
   rocketWrap.classList.add('pulling');
   chargeWrap.classList.add('visible');
+  e.preventDefault();
 }
 
-function moveLaunchDrag(e){
+function onDragMove(e){
   if (!dragging || launched) return;
-  if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
-  safePrevent(e);
-
-  const dy = getClientY(e) - startY;     // positive = pulled down
-  currentPull = Math.max(0, dy);         // only downward counts
+  e.preventDefault();
+  const dy = getY(e) - startY;          // positive = pulled down
+  currentPull = Math.max(0, dy);        // only downward counts
 
   // elastic: rocket moves down half the pull, capped at 60px
   const visual = Math.min(currentPull * 0.55, 60);
@@ -535,13 +498,9 @@ function moveLaunchDrag(e){
   else            chargeFill.classList.remove('ready');
 }
 
-function endLaunchDrag(e){
+function onDragEnd(e){
   if (!dragging || launched) return;
-  if (activePointerId !== null && e && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
-  safePrevent(e);
-
   dragging = false;
-  activePointerId = null;
   rocketWrap.classList.remove('pulling');
 
   if (currentPull >= PULL_THRESHOLD) {
@@ -565,23 +524,15 @@ function endLaunchDrag(e){
   }
 }
 
-// Pointer Events are more reliable than separate mouse/touch events on mobile browsers.
-if (window.PointerEvent) {
-  launchTouchZone.addEventListener('pointerdown', beginLaunchDrag, {passive:false});
-  window.addEventListener('pointermove', moveLaunchDrag, {passive:false});
-  window.addEventListener('pointerup', endLaunchDrag, {passive:false});
-  window.addEventListener('pointercancel', endLaunchDrag, {passive:false});
-} else {
-  // Fallback for very old mobile browsers.
-  launchTouchZone.addEventListener('mousedown', beginLaunchDrag);
-  window.addEventListener('mousemove', moveLaunchDrag);
-  window.addEventListener('mouseup', endLaunchDrag);
+// mouse
+rocketWrap.addEventListener('mousedown',  onDragStart);
+window.addEventListener('mousemove',  onDragMove);
+window.addEventListener('mouseup',    onDragEnd);
 
-  launchTouchZone.addEventListener('touchstart', beginLaunchDrag, {passive:false});
-  window.addEventListener('touchmove', moveLaunchDrag, {passive:false});
-  window.addEventListener('touchend', endLaunchDrag, {passive:false});
-  window.addEventListener('touchcancel', endLaunchDrag, {passive:false});
-}
+// touch
+rocketWrap.addEventListener('touchstart', onDragStart, {passive:false});
+window.addEventListener('touchmove',  onDragMove,  {passive:false});
+window.addEventListener('touchend',   onDragEnd);
 
 /* ── PLANET DATA ── */
 const planets = [
