@@ -113,6 +113,50 @@ html_content = """<!DOCTYPE html>
     transition: filter .2s;
   }
   #rocketWrap:active { cursor:grabbing; }
+
+
+  /* Large mobile-safe gesture layer for launch. This is intentionally much
+     bigger than the visible rocket because Streamlit renders this UI in an
+     iframe and tiny draggable targets are unreliable on phones. */
+  #launchGestureZone {
+    position:absolute;
+    left:50%; transform:translateX(-50%);
+    bottom:calc(22vh - 18px);
+    width:min(320px,86vw); height:min(300px,48vh);
+    z-index:35;
+    cursor:grab;
+    touch-action:none;
+    user-select:none;
+    -webkit-user-select:none;
+  }
+  #launchGestureZone:active { cursor:grabbing; }
+  .launch-touch-ring {
+    position:absolute; left:50%; bottom:78px; transform:translateX(-50%);
+    width:118px; height:118px; border-radius:50%;
+    border:1px dashed #88aaff44;
+    background:radial-gradient(circle,#88aaff10,transparent 70%);
+    animation:ringPulse 2.2s ease-in-out infinite;
+    pointer-events:none;
+  }
+  @keyframes ringPulse {
+    0%,100% { opacity:.35; transform:translateX(-50%) scale(.96); }
+    50% { opacity:.8; transform:translateX(-50%) scale(1.08); }
+  }
+  .launch-status {
+    position:absolute; left:50%; bottom:18px; transform:translateX(-50%);
+    width:min(260px,78vw); text-align:center;
+    font-size:clamp(.68rem,2.8vw,.82rem); color:#88aaffcc;
+    letter-spacing:.08em; text-transform:uppercase;
+    pointer-events:none;
+  }
+  .skip-launch-btn {
+    position:absolute; left:50%; bottom:12px; transform:translateX(-50%);
+    z-index:45; opacity:.9;
+    background:#ffffff0d; color:#dde8ff; border:1px solid #88aaff55;
+    border-radius:999px; min-height:44px; padding:10px 18px;
+    font-family:'Exo 2',sans-serif; font-size:.82rem; letter-spacing:.08em;
+    -webkit-appearance:none;
+  }
   #rocketWrap.launching {
     animation:liftoff 3s ease-in forwards;
     pointer-events:none;
@@ -363,7 +407,7 @@ html_content = """<!DOCTYPE html>
 <div id="zoomOverlay"></div>
 
 <!-- SCENE 1: LAUNCH -->
-<div class="scene hidden" id="scene-launch">
+<div class="scene" id="scene-launch">
   <div class="launch-title">
     <h1>KNOWN SPACE</h1>
     <p>A journey through the observable universe</p>
@@ -379,18 +423,24 @@ html_content = """<!DOCTYPE html>
     <div class="ground"></div>
     <div class="launchpad"></div>
 
-    <div id="rocketWrap">
+    <div id="launchGestureZone" aria-label="Pull down to launch" role="button">
+      <div class="launch-touch-ring"></div>
+      <div class="launch-status" id="launchStatus">Touch here and pull down</div>
+    </div>
+
+    <div id="rocketWrap" aria-hidden="true">
       <div class="rocket-nose"></div>
       <div class="rocket-body"></div>
       <div class="rocket-flame-idle" id="idleFlame"></div>
     </div>
 
     <div class="smoke-ring" id="smoke"></div>
+    <button class="skip-launch-btn" id="skipLaunchBtn" type="button">Skip launch</button>
   </div>
 </div>
 
 <!-- SCENE 2: SPACE -->
-<div class="scene" id="scene-space">
+<div class="scene hidden" id="scene-space">
   <div class="earth-globe"></div>
   <div class="shuttle-float">🚀</div>
   <div class="prompt-card">
@@ -453,86 +503,163 @@ for (let i=0;i<180;i++){
   starsEl.appendChild(s);
 }
 
-/* ── DRAG TO LAUNCH ── */
+/* ── DRAG TO LAUNCH: robust mobile + desktop input ── */
 const rocketWrap  = document.getElementById('rocketWrap');
+const launchZone  = document.getElementById('launchGestureZone');
+const skipLaunchBtn = document.getElementById('skipLaunchBtn');
 const chargeWrap  = document.getElementById('chargeWrap');
 const chargeFill  = document.getElementById('chargeFill');
 const idleFlame   = document.getElementById('idleFlame');
 const smokeEl     = document.getElementById('smoke');
+const launchStatus = document.getElementById('launchStatus');
 
-const PULL_THRESHOLD = 90;   // px pulled down = 100% charge
-let dragging = false, launched = false;
-let startY = 0, currentPull = 0;
+const PULL_THRESHOLD = 82;   // mobile-friendly threshold in px
+let dragging = false;
+let launched = false;
+let startY = 0;
+let currentPull = 0;
+let activePointerId = null;
+let dragStartedAt = 0;
 
-function getY(e){ return e.touches ? e.touches[0].clientY : e.clientY; }
-
-function onDragStart(e){
-  if (launched) return;
-  dragging = true; startY = getY(e);
-  rocketWrap.classList.add('pulling');
-  chargeWrap.classList.add('visible');
-  e.preventDefault();
+function safePrevent(e){
+  if (e && e.cancelable) e.preventDefault();
 }
-
-function onDragMove(e){
-  if (!dragging || launched) return;
-  e.preventDefault();
-  const dy = getY(e) - startY;          // positive = pulled down
-  currentPull = Math.max(0, dy);        // only downward counts
-
-  // elastic: rocket moves down half the pull, capped at 60px
-  const visual = Math.min(currentPull * 0.55, 60);
-  rocketWrap.style.transform = `translateX(-50%) translateY(${visual}px)`;
-
-  // charge bar
+function clientYFromEvent(e){
+  if (e.touches && e.touches.length) return e.touches[0].clientY;
+  if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0].clientY;
+  return e.clientY;
+}
+function setLaunchStatus(text){
+  if (launchStatus) launchStatus.textContent = text;
+}
+function resetCharge(){
+  currentPull = 0;
+  chargeFill.style.width = '0%';
+  chargeFill.classList.remove('ready');
+  idleFlame.style.borderTopWidth = '0px';
+  chargeWrap.classList.remove('visible');
+  setLaunchStatus('Touch here and pull down');
+}
+function renderPull(pullPx){
+  currentPull = Math.max(0, pullPx);
+  const visual = Math.min(currentPull * 0.58, 64);
   const pct = Math.min(currentPull / PULL_THRESHOLD * 100, 100);
+
+  rocketWrap.style.transform = `translateX(-50%) translateY(${visual}px)`;
   chargeFill.style.width = pct + '%';
 
-  // flame grows with charge
-  const flameH = Math.round(pct * 0.32);
+  const flameH = Math.round(pct * 0.36);
   idleFlame.style.borderTopWidth = flameH + 'px';
   idleFlame.style.borderTopColor = pct < 60 ? '#ff6600' : '#ffcc00';
   idleFlame.style.borderTopStyle = 'solid';
 
-  if (pct >= 100) chargeFill.classList.add('ready');
-  else            chargeFill.classList.remove('ready');
+  if (pct >= 100) {
+    chargeFill.classList.add('ready');
+    setLaunchStatus('Release to launch');
+  } else {
+    chargeFill.classList.remove('ready');
+    setLaunchStatus(`Charging ${Math.round(pct)}%`);
+  }
 }
+function beginDrag(e){
+  if (launched || dragging) return;
+  safePrevent(e);
+  dragging = true;
+  dragStartedAt = Date.now();
+  startY = clientYFromEvent(e);
+  currentPull = 0;
+  activePointerId = e.pointerId ?? null;
 
-function onDragEnd(e){
+  rocketWrap.classList.add('pulling');
+  chargeWrap.classList.add('visible');
+  setLaunchStatus('Pull down');
+
+  // Critical for mobile: keep receiving move/end events even when the finger
+  // leaves the small rocket/gesture area inside Streamlit's iframe.
+  try {
+    if (e.pointerId !== undefined && launchZone.setPointerCapture) {
+      launchZone.setPointerCapture(e.pointerId);
+    }
+  } catch (_) {}
+}
+function moveDrag(e){
   if (!dragging || launched) return;
+  if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
+  safePrevent(e);
+  renderPull(clientYFromEvent(e) - startY);
+}
+function finishDrag(e){
+  if (!dragging || launched) return;
+  if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
+  safePrevent(e);
   dragging = false;
+  activePointerId = null;
   rocketWrap.classList.remove('pulling');
 
+  try {
+    if (e.pointerId !== undefined && launchZone.releasePointerCapture) {
+      launchZone.releasePointerCapture(e.pointerId);
+    }
+  } catch (_) {}
+
   if (currentPull >= PULL_THRESHOLD) {
-    // LAUNCH!
-    launched = true;
-    chargeWrap.classList.remove('visible');
-    rocketWrap.style.transform = '';
-    rocketWrap.classList.add('launching');
-    smokeEl.classList.add('active');
-    setTimeout(()=> transition('scene-space', 340), 2500);
+    launchRocket();
   } else {
-    // snap back
     rocketWrap.style.transition = 'transform .4s cubic-bezier(.34,1.56,.64,1)';
     rocketWrap.style.transform  = 'translateX(-50%) translateY(0)';
     setTimeout(()=>{ rocketWrap.style.transition=''; }, 420);
-    chargeFill.style.width = '0%';
-    chargeFill.classList.remove('ready');
-    idleFlame.style.borderTopWidth = '0px';
-    chargeWrap.classList.remove('visible');
-    currentPull = 0;
+    resetCharge();
   }
 }
+function cancelDrag(e){
+  if (!dragging || launched) return;
+  dragging = false;
+  activePointerId = null;
+  rocketWrap.classList.remove('pulling');
+  rocketWrap.style.transition = 'transform .28s ease-out';
+  rocketWrap.style.transform  = 'translateX(-50%) translateY(0)';
+  setTimeout(()=>{ rocketWrap.style.transition=''; }, 300);
+  resetCharge();
+}
+function launchRocket(){
+  if (launched) return;
+  launched = true;
+  dragging = false;
+  chargeWrap.classList.remove('visible');
+  launchZone.style.pointerEvents = 'none';
+  if (skipLaunchBtn) skipLaunchBtn.style.display = 'none';
+  rocketWrap.style.transition = '';
+  rocketWrap.style.transform = '';
+  rocketWrap.classList.add('launching');
+  smokeEl.classList.add('active');
+  setLaunchStatus('Launching');
+  setTimeout(()=> transition('scene-space', 340), 2500);
+}
 
-// mouse
-rocketWrap.addEventListener('mousedown',  onDragStart);
-window.addEventListener('mousemove',  onDragMove);
-window.addEventListener('mouseup',    onDragEnd);
+// Primary path: Pointer Events cover touch, mouse, pen on modern iOS/Android/desktop.
+launchZone.addEventListener('pointerdown', beginDrag, {passive:false});
+window.addEventListener('pointermove', moveDrag, {passive:false});
+window.addEventListener('pointerup', finishDrag, {passive:false});
+window.addEventListener('pointercancel', cancelDrag, {passive:false});
+window.addEventListener('lostpointercapture', cancelDrag, {passive:false});
 
-// touch
-rocketWrap.addEventListener('touchstart', onDragStart, {passive:false});
-window.addEventListener('touchmove',  onDragMove,  {passive:false});
-window.addEventListener('touchend',   onDragEnd);
+// Fallback path for older WebViews that do not fully support Pointer Events.
+if (!window.PointerEvent) {
+  launchZone.addEventListener('touchstart', beginDrag, {passive:false});
+  window.addEventListener('touchmove', moveDrag, {passive:false});
+  window.addEventListener('touchend', finishDrag, {passive:false});
+  window.addEventListener('touchcancel', cancelDrag, {passive:false});
+  launchZone.addEventListener('mousedown', beginDrag, {passive:false});
+  window.addEventListener('mousemove', moveDrag, {passive:false});
+  window.addEventListener('mouseup', finishDrag, {passive:false});
+}
+
+// Accessibility / escape hatch. This does not replace drag; it prevents users
+// from getting blocked if a browser still interferes with drag in an iframe.
+skipLaunchBtn.addEventListener('click', (e)=>{ safePrevent(e); launchRocket(); });
+launchZone.addEventListener('keydown', (e)=>{
+  if (e.key === 'Enter' || e.key === ' ') { safePrevent(e); launchRocket(); }
+});
 
 /* ── PLANET DATA ── */
 const planets = [
@@ -581,8 +708,8 @@ function buildSolarSystem(){
     if(p.ring){const r=document.createElement('div');r.className='saturn-ring';planet.appendChild(r);}
     wrap.appendChild(planet); solar.appendChild(wrap);
     const openInfo=e=>{e.preventDefault();e.stopPropagation();showInfo(p,wrap);};
-    hit.addEventListener('click',openInfo);
-    hit.addEventListener('touchend',openInfo,{passive:false});
+    hit.addEventListener('pointerup',openInfo,{passive:false});
+    hit.addEventListener('click',openInfo,{passive:false});
   });
 }
 
