@@ -89,6 +89,19 @@ html_content = """<!DOCTYPE html>
     flex:1; display:flex; flex-direction:column;
     align-items:center; justify-content:flex-end;
     position:relative; width:100%; overflow:hidden;
+    touch-action:none; -webkit-user-select:none; user-select:none;
+  }
+
+  /* Large transparent mobile drag zone. This avoids relying on the tiny rocket as the only touch target. */
+  #launchTouchZone {
+    position:absolute;
+    left:50%; transform:translateX(-50%);
+    bottom:calc(22vh + 2px);
+    width:min(220px,70vw); height:190px;
+    z-index:40;
+    background:transparent;
+    touch-action:none;
+    cursor:grab;
   }
   .ground {
     position:absolute; bottom:0; left:0; right:0;
@@ -113,11 +126,7 @@ html_content = """<!DOCTYPE html>
     z-index:20;
     transition: filter .2s;
   }
-  /* bigger invisible mobile touch target around the tiny rocket */
-  #rocketWrap::before {
-    content:''; position:absolute; inset:-42px -54px -58px -54px;
-    z-index:-1; border-radius:28px; pointer-events:auto;
-  }
+  /* decorative rocket remains visible; actual mobile drag is handled by #launchTouchZone */
   #rocketWrap:active { cursor:grabbing; }
   #rocketWrap.launching {
     animation:liftoff 3s ease-in forwards;
@@ -390,6 +399,7 @@ html_content = """<!DOCTYPE html>
       <div class="rocket-body"></div>
       <div class="rocket-flame-idle" id="idleFlame"></div>
     </div>
+    <div id="launchTouchZone" aria-label="Pull down to launch"></div>
 
     <div class="smoke-ring" id="smoke"></div>
   </div>
@@ -461,6 +471,7 @@ for (let i=0;i<180;i++){
 
 /* ── DRAG TO LAUNCH ── */
 const rocketWrap  = document.getElementById('rocketWrap');
+const launchTouchZone = document.getElementById('launchTouchZone');
 const chargeWrap  = document.getElementById('chargeWrap');
 const chargeFill  = document.getElementById('chargeFill');
 const idleFlame   = document.getElementById('idleFlame');
@@ -490,8 +501,8 @@ function beginLaunchDrag(e){
   currentPull = 0;
 
   // Critical on phones: keep receiving move/end events even if the finger leaves the small rocket.
-  if (e.pointerId !== undefined && rocketWrap.setPointerCapture) {
-    try { rocketWrap.setPointerCapture(e.pointerId); } catch (_) {}
+  if (e.pointerId !== undefined && launchTouchZone.setPointerCapture) {
+    try { launchTouchZone.setPointerCapture(e.pointerId); } catch (_) {}
   }
 
   rocketWrap.classList.add('pulling');
@@ -556,17 +567,17 @@ function endLaunchDrag(e){
 
 // Pointer Events are more reliable than separate mouse/touch events on mobile browsers.
 if (window.PointerEvent) {
-  rocketWrap.addEventListener('pointerdown', beginLaunchDrag, {passive:false});
-  rocketWrap.addEventListener('pointermove', moveLaunchDrag, {passive:false});
-  rocketWrap.addEventListener('pointerup', endLaunchDrag, {passive:false});
-  rocketWrap.addEventListener('pointercancel', endLaunchDrag, {passive:false});
+  launchTouchZone.addEventListener('pointerdown', beginLaunchDrag, {passive:false});
+  window.addEventListener('pointermove', moveLaunchDrag, {passive:false});
+  window.addEventListener('pointerup', endLaunchDrag, {passive:false});
+  window.addEventListener('pointercancel', endLaunchDrag, {passive:false});
 } else {
   // Fallback for very old mobile browsers.
-  rocketWrap.addEventListener('mousedown', beginLaunchDrag);
+  launchTouchZone.addEventListener('mousedown', beginLaunchDrag);
   window.addEventListener('mousemove', moveLaunchDrag);
   window.addEventListener('mouseup', endLaunchDrag);
 
-  rocketWrap.addEventListener('touchstart', beginLaunchDrag, {passive:false});
+  launchTouchZone.addEventListener('touchstart', beginLaunchDrag, {passive:false});
   window.addEventListener('touchmove', moveLaunchDrag, {passive:false});
   window.addEventListener('touchend', endLaunchDrag, {passive:false});
   window.addEventListener('touchcancel', endLaunchDrag, {passive:false});
