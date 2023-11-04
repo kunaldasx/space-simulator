@@ -8,771 +8,1130 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Strip ALL streamlit chrome so the iframe fills the whole viewport
 st.markdown("""
 <style>
-    #MainMenu, header, footer { visibility: hidden; }
-    .stApp { background: #000; }
-    .block-container { padding: 0 !important; max-width: 100% !important; }
-    iframe { display: block; }
+  #MainMenu, header, footer, .stDeployButton { visibility: hidden !important; }
+  .stApp { background: #000 !important; }
+  .block-container { padding: 0 !important; max-width: 100% !important; margin: 0 !important; }
+  section[data-testid="stSidebar"] { display: none !important; }
+  iframe { display: block !important; border: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
-html_content = """<!DOCTYPE html>
+# ─────────────────────────────────────────────────────────────────────────────
+# Everything below is one self-contained HTML/CSS/JS app.
+# Key engineering decisions:
+#   1. No window-level event listeners for drag — use document-level with
+#      pointer events (pointerdown/pointermove/pointerup) which work
+#      identically on touch and mouse and don't get blocked by touch-action.
+#   2. Rocket position managed purely in JS via CSS custom property --ry
+#      so transform stays `translateX(-50%) translateY(var(--ry))` always.
+#   3. iframe height = 100vh trick: set height to a large number (10000) and
+#      let Streamlit clip, OR use scrolling=False + large height. We use
+#      window.innerHeight detection inside JS to size things correctly.
+#   4. All interactive elements use pointer-events model.
+# ─────────────────────────────────────────────────────────────────────────────
+
+HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>Known Space Explorer</title>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:wght@300;400;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Exo+2:ital,wght@0,300;0,400;0,600&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+/* ═══════════════════════════════════════════════
+   RESET & BASE
+═══════════════════════════════════════════════ */
+*, *::before, *::after {
+  margin: 0; padding: 0; box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+html {
+  height: 100%; background: #000;
+}
+body {
+  height: 100%; width: 100%; overflow: hidden;
+  background: #000; color: #fff;
+  font-family: 'Exo 2', sans-serif;
+  /* do NOT set touch-action on body — let children control it */
+}
 
-  html, body {
-    background:#000; font-family:'Exo 2',sans-serif; color:#fff;
-    width:100%; height:100%; overflow:hidden; touch-action:manipulation;
-  }
+/* ═══════════════════════════════════════════════
+   STARS (background layer)
+═══════════════════════════════════════════════ */
+#stars {
+  position: fixed; inset: 0;
+  pointer-events: none; z-index: 0;
+  overflow: hidden;
+}
+.star {
+  position: absolute; background: #fff; border-radius: 50%;
+  animation: twinkle var(--d, 3s) infinite alternate;
+  animation-delay: var(--del, 0s);
+}
+@keyframes twinkle {
+  from { opacity: .1; transform: scale(1); }
+  to   { opacity: .9; transform: scale(1.6); }
+}
 
-  #stars { position:fixed; inset:0; pointer-events:none; z-index:0; }
-  .star {
-    position:absolute; background:#fff; border-radius:50%;
-    animation:twinkle var(--d,3s) infinite alternate;
-  }
-  @keyframes twinkle {
-    from { opacity:.15; transform:scale(1); }
-    to   { opacity:1;   transform:scale(1.5); }
-  }
+/* ═══════════════════════════════════════════════
+   SCENES
+═══════════════════════════════════════════════ */
+.scene {
+  position: fixed; inset: 0;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: flex-start;
+  z-index: 10;
+  opacity: 1; pointer-events: auto;
+  transition: opacity .6s ease;
+  overflow: hidden;
+}
+.scene.hidden {
+  opacity: 0; pointer-events: none;
+}
 
-  .scene {
-    position:fixed; inset:0;
-    display:flex; flex-direction:column;
-    align-items:center; justify-content:center;
-    z-index:10; transition:opacity .7s ease;
-  }
-  .scene.hidden { opacity:0; pointer-events:none; }
+/* ═══════════════════════════════════════════════
+   SCENE 1 — LAUNCH
+═══════════════════════════════════════════════ */
+#scene-launch {
+  background: linear-gradient(to top, #060625 0%, #000010 60%, #000 100%);
+}
 
-  /* ── LAUNCH SCENE ── */
-  #scene-launch {
-    background:linear-gradient(to top, #060620 0%, #000 55%);
-    justify-content:flex-start;
-  }
-  .launch-title {
-    text-align:center; padding:0 20px;
-    margin-top:9vh; flex-shrink:0;
-  }
-  .launch-title h1 {
-    font-family:'Orbitron',monospace;
-    font-size:clamp(1.6rem,7vw,3rem); font-weight:900; letter-spacing:.12em;
-    background:linear-gradient(135deg,#fff,#88aaff,#fff);
-    -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text;
-  }
-  .launch-title p {
-    margin-top:8px; font-size:clamp(.62rem,2.5vw,.8rem);
-    color:#88aaff88; letter-spacing:.2em; text-transform:uppercase;
-  }
+.launch-header {
+  text-align: center;
+  padding: 0 24px;
+  margin-top: 8vh;
+  flex-shrink: 0;
+  user-select: none;
+}
+.launch-header h1 {
+  font-family: 'Orbitron', monospace;
+  font-size: clamp(1.7rem, 7vw, 3.2rem);
+  font-weight: 900; letter-spacing: .1em;
+  background: linear-gradient(135deg, #fff 0%, #88aaff 50%, #fff 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.launch-header .sub {
+  margin-top: 6px;
+  font-size: clamp(.6rem, 2.5vw, .82rem);
+  color: #88aaff77; letter-spacing: .22em; text-transform: uppercase;
+}
+.launch-header .hint {
+  margin-top: 16px;
+  font-size: clamp(.72rem, 3vw, .9rem);
+  color: #88aaffbb; letter-spacing: .08em;
+  animation: hintBob 1.8s ease-in-out infinite;
+}
+@keyframes hintBob {
+  0%, 100% { transform: translateY(0);   opacity: .6; }
+  50%       { transform: translateY(5px); opacity: 1;  }
+}
 
-  /* drag hint */
-  .drag-hint {
-    margin-top: 14px;
-    font-size: clamp(.7rem, 3vw, .85rem);
-    color: #88aaff99;
-    letter-spacing: .1em;
-    animation: hintPulse 2s ease-in-out infinite;
-    user-select: none;
-  }
-  @keyframes hintPulse {
-    0%,100% { opacity:.5; transform:translateY(0); }
-    50%      { opacity:1;  transform:translateY(4px); }
-  }
+/* The rocket stage: fills remaining vertical space */
+.launch-stage {
+  flex: 1;
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  /* needed so absolute children position relative to this */
+}
 
-  /* rocket area fills remaining space */
-  .rocket-area {
-    flex:1; display:flex; flex-direction:column;
-    align-items:center; justify-content:flex-end;
-    position:relative; width:100%; overflow:hidden;
-  }
-  .ground {
-    position:absolute; bottom:0; left:0; right:0;
-    height:22vh; min-height:110px; max-height:200px;
-    background:radial-gradient(ellipse 130% 60% at 50% 100%,#1a472a 0%,#0d2818 50%,#050f08 100%);
-    border-top:1px solid #2d7a3a33;
-  }
-  .launchpad {
-    position:absolute; bottom:22vh; left:50%; transform:translateX(-50%);
-    width:min(90px,20vw); height:12px;
-    background:#555; border-radius:3px 3px 0 0; border:1px solid #777;
-  }
+/* Ground */
+.ground {
+  position: absolute; bottom: 0; left: 0; right: 0;
+  height: 22vh; min-height: 100px; max-height: 220px;
+  background: radial-gradient(ellipse 140% 60% at 50% 100%,
+    #1a472a 0%, #0d2818 55%, #040d06 100%);
+  border-top: 1px solid #2d7a3a22;
+}
 
-  /* ROCKET — draggable */
-  #rocketWrap {
-    position:absolute;
-    bottom:calc(22vh + 12px);
-    left:50%; transform:translateX(-50%);
-    display:flex; flex-direction:column; align-items:center;
-    cursor:grab; touch-action:none; user-select:none;
-    z-index:20;
-    transition: filter .2s;
-  }
-  #rocketWrap:active { cursor:grabbing; }
+/* Launchpad */
+.launchpad {
+  position: absolute;
+  bottom: 22vh; left: 50%;
+  transform: translateX(-50%);
+  width: clamp(70px, 18vw, 100px); height: 11px;
+  background: linear-gradient(180deg, #777, #444);
+  border-radius: 3px 3px 0 0;
+  border: 1px solid #999;
+  box-shadow: 0 0 12px #ffffff11;
+}
 
+/* Charge bar — sits above launchpad */
+#chargeBar {
+  position: absolute;
+  bottom: calc(22vh + 130px);
+  left: 50%; transform: translateX(-50%);
+  width: clamp(130px, 35vw, 180px);
+  height: 7px;
+  background: #ffffff0f;
+  border: 1px solid #ffffff1a;
+  border-radius: 4px;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity .25s;
+  pointer-events: none;
+}
+#chargeBar.visible { opacity: 1; }
+#chargeFill {
+  height: 100%; width: 0%;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #2255cc, #88aaff);
+  transition: background .3s;
+}
+#chargeFill.ready {
+  background: linear-gradient(90deg, #11aa55, #66ffaa);
+  box-shadow: 0 0 8px #66ffaa88;
+}
+#chargeLabel {
+  position: absolute;
+  bottom: calc(22vh + 142px);
+  left: 50%; transform: translateX(-50%);
+  font-size: .65rem; color: #88aaff88;
+  letter-spacing: .15em; text-transform: uppercase;
+  pointer-events: none;
+  opacity: 0; transition: opacity .25s;
+}
+#chargeLabel.visible { opacity: 1; }
 
-  /* Large mobile-safe gesture layer for launch. This is intentionally much
-     bigger than the visible rocket because Streamlit renders this UI in an
-     iframe and tiny draggable targets are unreliable on phones. */
-  #launchGestureZone {
-    position:absolute;
-    left:50%; transform:translateX(-50%);
-    bottom:calc(22vh - 18px);
-    width:min(320px,86vw); height:min(300px,48vh);
-    z-index:35;
-    cursor:grab;
-    touch-action:none;
-    user-select:none;
-    -webkit-user-select:none;
-  }
-  #launchGestureZone:active { cursor:grabbing; }
-  .launch-touch-ring {
-    position:absolute; left:50%; bottom:78px; transform:translateX(-50%);
-    width:118px; height:118px; border-radius:50%;
-    border:1px dashed #88aaff44;
-    background:radial-gradient(circle,#88aaff10,transparent 70%);
-    animation:ringPulse 2.2s ease-in-out infinite;
-    pointer-events:none;
-  }
-  @keyframes ringPulse {
-    0%,100% { opacity:.35; transform:translateX(-50%) scale(.96); }
-    50% { opacity:.8; transform:translateX(-50%) scale(1.08); }
-  }
-  .launch-status {
-    position:absolute; left:50%; bottom:18px; transform:translateX(-50%);
-    width:min(260px,78vw); text-align:center;
-    font-size:clamp(.68rem,2.8vw,.82rem); color:#88aaffcc;
-    letter-spacing:.08em; text-transform:uppercase;
-    pointer-events:none;
-  }
-  .skip-launch-btn {
-    position:absolute; left:50%; bottom:12px; transform:translateX(-50%);
-    z-index:45; opacity:.9;
-    background:#ffffff0d; color:#dde8ff; border:1px solid #88aaff55;
-    border-radius:999px; min-height:44px; padding:10px 18px;
-    font-family:'Exo 2',sans-serif; font-size:.82rem; letter-spacing:.08em;
-    -webkit-appearance:none;
-  }
-  #rocketWrap.launching {
-    animation:liftoff 3s ease-in forwards;
-    pointer-events:none;
-  }
-  @keyframes liftoff {
-    0%   { transform:translateX(-50%) translateY(0)      scale(1); filter:none; }
-    15%  { transform:translateX(-50%) translateY(-20px)  scale(1); }
-    100% { transform:translateX(-50%) translateY(-130vh) scale(.18); opacity:0; }
-  }
+/* ── ROCKET ── */
+/* We use a wrapper that is positioned absolute, horizontally centred.
+   The vertical offset is controlled ONLY by JS via --ry custom property
+   so transform is always: translateX(-50%) translateY(var(--ry,0px))
+   This prevents the "jump to left" bug. */
+#rocket {
+  position: absolute;
+  bottom: calc(22vh + 11px);   /* sits on launchpad */
+  left: 50%;
+  --ry: 0px;
+  transform: translateX(-50%) translateY(var(--ry));
+  display: flex; flex-direction: column; align-items: center;
+  cursor: grab;
+  touch-action: none;   /* critical: lets pointer events work on touch */
+  user-select: none;
+  z-index: 30;
+  will-change: transform;
+}
+#rocket:active { cursor: grabbing; }
 
-  /* pull-down elastic visual */
-  #rocketWrap.pulling {
-    transition: none;
-  }
+/* Rocket SVG-style shapes */
+.r-nose {
+  width: 0; height: 0;
+  border-left: 14px solid transparent;
+  border-right: 14px solid transparent;
+  border-bottom: 54px solid #d8d8d8;
+  filter: drop-shadow(0 0 6px #88aaff66);
+  pointer-events: none;
+}
+.r-body {
+  width: 28px; height: 40px;
+  background: linear-gradient(180deg, #e0e0e0 0%, #aaa 100%);
+  border-radius: 2px;
+  position: relative;
+  pointer-events: none;
+}
+/* fins */
+.r-body::before, .r-body::after {
+  content: '';
+  position: absolute; bottom: 4px;
+  width: 13px; height: 20px;
+  background: linear-gradient(180deg, #999, #666);
+  border-radius: 0 0 6px 6px;
+}
+.r-body::before { left: -12px; }
+.r-body::after  { right: -12px; }
+/* window */
+.r-body .r-window {
+  position: absolute; top: 8px; left: 50%;
+  transform: translateX(-50%);
+  width: 10px; height: 10px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #aadeff, #226688);
+  border: 1px solid #ffffff44;
+  pointer-events: none;
+}
+/* flame */
+.r-flame {
+  width: 0; height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-top: 0px solid #ff6600;
+  pointer-events: none;
+  transition: border-top-width .08s, border-top-color .15s;
+}
 
-  /* charge bar */
-  .charge-wrap {
-    position:absolute; bottom:calc(22vh + 90px); left:50%; transform:translateX(-50%);
-    width:min(160px,40vw); height:6px;
-    background:#ffffff11; border-radius:3px; overflow:hidden;
-    opacity:0; transition:opacity .2s;
-  }
-  .charge-wrap.visible { opacity:1; }
-  #chargeFill {
-    height:100%; width:0%; border-radius:3px;
-    background:linear-gradient(90deg,#3b82f6,#88aaff);
-    transition:width .05s linear, background .2s;
-  }
-  #chargeFill.ready { background:linear-gradient(90deg,#22cc66,#88ffbb); }
+/* smoke puff */
+#smoke {
+  position: absolute;
+  bottom: 22vh; left: 50%;
+  transform: translateX(-50%);
+  width: 0; height: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle, #aaa, #444);
+  opacity: 0;
+  pointer-events: none;
+}
+#smoke.active {
+  animation: smokePuff 2.4s ease-out forwards;
+}
+@keyframes smokePuff {
+  0%   { width: 10px; height: 10px; opacity: .8; }
+  100% { width: 260px; height: 260px; opacity: 0; }
+}
 
-  /* flame shown while pulling */
-  .rocket-flame-idle {
-    width:10px; height:0;
-    border-left:5px solid transparent; border-right:5px solid transparent;
-    border-top:0px solid #ff6600;
-    transition: border-top-width .1s;
-  }
+/* liftoff animation — applied by JS */
+@keyframes liftoff {
+  0%   { bottom: calc(22vh + 11px); --ry: 0px; opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  10%  { transform: translateX(-50%) translateY(-30px) scale(1); }
+  100% { transform: translateX(-50%) translateY(-150vh) scale(.15); opacity: 0; }
+}
+#rocket.launching {
+  animation: liftoff 2.8s ease-in forwards;
+  pointer-events: none;
+  cursor: default;
+}
+#rocket.launching .r-flame {
+  animation: launchFlame 2.8s ease-in forwards;
+}
+@keyframes launchFlame {
+  0%   { border-top-width: 30px; border-top-color: #ff6600; }
+  40%  { border-top-width: 60px; border-top-color: #ffaa00; }
+  100% { border-top-width: 10px; border-top-color: #ffee66; opacity: .2; }
+}
 
-  #rocketWrap.launching .rocket-flame-idle {
-    animation:burnFlame 3s ease-in forwards;
-  }
-  @keyframes burnFlame {
-    0%   { border-top-width:28px; border-top-color:#ff6600; opacity:1; }
-    50%  { border-top-width:50px; border-top-color:#ffaa00; opacity:1; }
-    100% { border-top-width:6px;  border-top-color:#ffdd00; opacity:.1; }
-  }
+/* ═══════════════════════════════════════════════
+   SCENE 2 — SPACE
+═══════════════════════════════════════════════ */
+#scene-space {
+  background: radial-gradient(ellipse at 75% 90%, #001830 0%, #000 55%);
+  justify-content: center;
+}
+.earth-orb {
+  position: absolute; bottom: -18vw; right: -18vw;
+  width: clamp(200px, 65vw, 340px);
+  height: clamp(200px, 65vw, 340px);
+  border-radius: 50%;
+  background: radial-gradient(circle at 33% 33%,
+    #2299ff, #006699, #003355, #001122);
+  box-shadow: 0 0 50px #1e90ff33, inset -20px -20px 50px #00000066;
+  pointer-events: none;
+}
+.floating-rocket {
+  position: absolute; top: 24%; left: 10%;
+  font-size: clamp(2rem, 9vw, 3.4rem);
+  animation: floatR 5s ease-in-out infinite;
+  filter: drop-shadow(0 0 10px #88aaff55);
+  pointer-events: none; user-select: none;
+}
+@keyframes floatR {
+  0%, 100% { transform: translateY(0) rotate(-12deg); }
+  50%       { transform: translateY(-16px) rotate(-12deg); }
+}
 
-  .rocket-nose {
-    width:0; height:0;
-    border-left:13px solid transparent; border-right:13px solid transparent;
-    border-bottom:50px solid #d0d0d0;
-    filter:drop-shadow(0 0 6px #88aaff55);
-    pointer-events:none;
-  }
-  .rocket-body {
-    width:26px; height:36px;
-    background:linear-gradient(180deg,#ddd,#aaa); border-radius:2px; position:relative;
-    pointer-events:none;
-  }
-  .rocket-body::before, .rocket-body::after {
-    content:''; position:absolute; top:8px;
-    width:11px; height:16px; background:#888; border-radius:0 0 5px 5px;
-  }
-  .rocket-body::before { left:-10px; }
-  .rocket-body::after  { right:-10px; }
+/* ═══════════════════════════════════════════════
+   SHARED CARD / PROMPT STYLES
+═══════════════════════════════════════════════ */
+.glass-card {
+  background: #ffffff07;
+  border: 1px solid #88aaff2a;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-radius: 20px;
+  padding: clamp(24px, 5vw, 42px) clamp(20px, 5vw, 44px);
+  text-align: center;
+  max-width: min(88vw, 450px);
+  animation: cardIn .7s cubic-bezier(.16,1,.3,1) forwards;
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(28px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.glass-card h2 {
+  font-family: 'Orbitron', monospace;
+  font-size: clamp(1rem, 4.5vw, 1.4rem);
+  margin-bottom: 10px; color: #fff;
+}
+.glass-card p {
+  font-size: clamp(.8rem, 3.3vw, .95rem);
+  color: #aac4e0; line-height: 1.7;
+  margin-bottom: 22px;
+}
 
-  .smoke-ring {
-    position:absolute; bottom:calc(22vh + 12px); left:50%; transform:translateX(-50%);
-    width:0; height:0; opacity:0; border-radius:50%; pointer-events:none;
-  }
-  .smoke-ring.active { animation:smokeOut 2.6s ease-out forwards; }
-  @keyframes smokeOut {
-    0%   { width:8px;   height:8px;   opacity:.7; background:#888; }
-    100% { width:200px; height:200px; opacity:0;  background:#333; }
-  }
+/* ═══════════════════════════════════════════════
+   BUTTONS
+═══════════════════════════════════════════════ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 52px; padding: 0 28px;
+  border-radius: 8px; border: none;
+  font-family: 'Orbitron', monospace;
+  font-size: clamp(.78rem, 3.5vw, .95rem);
+  font-weight: 700; letter-spacing: .1em;
+  text-transform: uppercase; cursor: pointer;
+  -webkit-appearance: none; touch-action: manipulation;
+  transition: opacity .15s, transform .15s;
+  user-select: none;
+}
+.btn:active { opacity: .75; transform: scale(.96); }
+.btn-primary {
+  background: linear-gradient(135deg, #1a3080, #3b82f6);
+  color: #fff;
+  box-shadow: 0 4px 20px #3b82f633;
+}
+.btn-ghost {
+  background: transparent;
+  border: 1px solid #88aaff44;
+  color: #88aaff99;
+  font-family: 'Exo 2', sans-serif; font-weight: 600;
+}
+.btn-ghost:active { border-color: #88aaff; color: #88aaff; }
+.btn-row { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
 
-  /* ── SHARED BUTTONS ── */
-  .btn-primary {
-    background:linear-gradient(135deg,#1e3a8a,#3b82f6); border:none; color:#fff;
-    font-family:'Orbitron',monospace; font-size:clamp(.85rem,4vw,1rem);
-    font-weight:700; letter-spacing:.12em; padding:16px 32px;
-    cursor:pointer; border-radius:8px; min-height:52px;
-    text-transform:uppercase; -webkit-appearance:none; transition:opacity .2s;
-  }
-  .btn-primary:active { opacity:.75; }
-  .btn-ghost {
-    background:transparent; border:1px solid #88aaff55; color:#88aaff99;
-    font-family:'Exo 2',sans-serif; font-size:clamp(.85rem,4vw,.95rem);
-    padding:14px 24px; cursor:pointer; border-radius:8px; min-height:52px;
-    -webkit-appearance:none; transition:all .2s;
-  }
-  .btn-ghost:active { border-color:#88aaff; color:#88aaff; }
-  .btn-row { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+/* ═══════════════════════════════════════════════
+   SCENE 3 — SOLAR SYSTEM
+═══════════════════════════════════════════════ */
+#scene-solar {
+  background: radial-gradient(ellipse at 50% 50%, #080215 0%, #000 70%);
+  justify-content: center;
+}
+.solar-label {
+  position: absolute; top: 14px;
+  font-family: 'Orbitron', monospace;
+  font-size: clamp(.58rem, 2.3vw, .82rem);
+  letter-spacing: .3em; color: #88aaff44;
+  text-transform: uppercase;
+  pointer-events: none; user-select: none;
+}
+#solarSystem {
+  position: relative;
+  flex-shrink: 0;
+  /* size set by JS */
+}
+.sun {
+  position: absolute; border-radius: 50%;
+  background: radial-gradient(circle at 38% 38%,
+    #fffacc, #ffcc00, #ff8800, #ff3300);
+  box-shadow: 0 0 28px #ffcc0066, 0 0 60px #ff880033;
+  animation: sunPulse 3.5s ease-in-out infinite;
+  z-index: 5;
+}
+@keyframes sunPulse {
+  0%, 100% { box-shadow: 0 0 28px #ffcc0066, 0 0 60px #ff880033; }
+  50%       { box-shadow: 0 0 44px #ffcc0099, 0 0 90px #ff880055; }
+}
+.orbit-ring {
+  position: absolute; border-radius: 50%;
+  border: 1px solid #ffffff08;
+  pointer-events: none;
+}
+.planet-wrap {
+  position: absolute; top: 50%; left: 50%;
+  transform-origin: 0 0;
+  /* animation set by JS */
+}
+.planet {
+  position: absolute;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 10;
+  /* size / color / position set by JS */
+}
+.planet-hitbox {
+  position: absolute;
+  inset: -16px;
+  border-radius: 50%;
+  touch-action: manipulation;
+  cursor: pointer;
+}
+.planet-name {
+  position: absolute;
+  top: calc(100% + 4px); left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-size: clamp(6px, 1.6vw, 9px);
+  color: #ffffff44;
+  pointer-events: none; user-select: none;
+}
+.saturn-ring {
+  position: absolute;
+  width: 160%; height: 30%;
+  border-radius: 50%;
+  border: 2px solid #c8a96466;
+  top: 35%; left: -30%;
+  transform: rotateX(65deg);
+  pointer-events: none;
+}
 
-  /* ── SPACE SCENE ── */
-  #scene-space { background:radial-gradient(ellipse at 78% 82%,#001833 0%,#000 55%); }
-  .earth-globe {
-    position:absolute; bottom:-14vw; right:-14vw;
-    width:min(72vw,320px); height:min(72vw,320px); border-radius:50%;
-    background:radial-gradient(circle at 35% 35%,#1e90ff,#006994,#003d5b,#001a2e);
-    box-shadow:0 0 50px #1e90ff33,inset -18px -18px 45px #00000077;
-  }
-  .shuttle-float {
-    position:absolute; top:26%; left:12%;
-    font-size:clamp(2rem,8vw,3rem);
-    animation:floatShuttle 5s ease-in-out infinite;
-    filter:drop-shadow(0 0 10px #88aaff66);
-  }
-  @keyframes floatShuttle {
-    0%,100% { transform:translateY(0) rotate(-10deg); }
-    50%      { transform:translateY(-14px) rotate(-10deg); }
-  }
-  .prompt-card {
-    background:#ffffff08; border:1px solid #88aaff33;
-    backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-    border-radius:18px; padding:clamp(22px,5vw,38px) clamp(18px,5vw,40px);
-    text-align:center; max-width:min(88vw,440px);
-    animation:fadeSlideUp .7s ease forwards;
-  }
-  @keyframes fadeSlideUp {
-    from { opacity:0; transform:translateY(24px); }
-    to   { opacity:1; transform:translateY(0); }
-  }
-  .prompt-card h2 { font-family:'Orbitron',monospace; font-size:clamp(1rem,4.5vw,1.35rem); margin-bottom:10px; }
-  .prompt-card p  { color:#aabfe0; font-size:clamp(.8rem,3.3vw,.93rem); line-height:1.65; margin-bottom:22px; }
+/* bottom prompt on solar scene */
+#solarPrompt {
+  position: absolute; bottom: 14px; left: 50%;
+  transform: translateX(-50%);
+  background: #000000cc;
+  border: 1px solid #88aaff22;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  border-radius: 14px;
+  padding: 16px 22px;
+  text-align: center;
+  width: min(92vw, 380px);
+  animation: cardIn .8s ease 1.2s both;
+}
+#solarPrompt p {
+  font-size: clamp(.75rem, 3vw, .88rem);
+  color: #aac4e0; margin-bottom: 14px; line-height: 1.5;
+}
 
-  /* ── SOLAR SYSTEM ── */
-  #scene-solar {
-    background:radial-gradient(ellipse at 50% 50%,#080318 0%,#000 65%);
-    overflow:hidden; justify-content:center;
-  }
-  .solar-header {
-    position:absolute; top:14px;
-    font-family:'Orbitron',monospace; font-size:clamp(.6rem,2.5vw,.85rem);
-    letter-spacing:.28em; color:#88aaff55; text-transform:uppercase;
-  }
-  #solarSystem { position:relative; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
-  .sun {
-    position:absolute; border-radius:50%;
-    background:radial-gradient(circle,#fff7aa,#ffcc00,#ff8800,#ff4400);
-    box-shadow:0 0 20px #ffcc0077,0 0 50px #ff880033; z-index:5;
-    animation:pulse 3s ease-in-out infinite;
-  }
-  @keyframes pulse {
-    0%,100% { box-shadow:0 0 20px #ffcc0077,0 0 50px #ff880033; }
-    50%      { box-shadow:0 0 36px #ffcc00aa,0 0 80px #ff880055; }
-  }
-  .orbit { position:absolute; border-radius:50%; border:1px solid #ffffff09; pointer-events:none; }
-  .planet-wrap { position:absolute; top:50%; left:50%; transform-origin:0 0; }
-  .planet { border-radius:50%; cursor:pointer; position:relative; transition:transform .15s; }
-  .planet:active { transform:scale(1.5); }
-  .planet-label {
-    position:absolute; top:calc(100% + 3px); left:50%; transform:translateX(-50%);
-    font-size:clamp(6px,1.5vw,8px); color:#ffffff55; white-space:nowrap; pointer-events:none;
-  }
-  .saturn-ring {
-    position:absolute; width:155%; height:28%; border-radius:50%;
-    border:2px solid #c8a96477; top:36%; left:-27.5%;
-    transform:rotateX(68deg); pointer-events:none;
-  }
-  .float-prompt {
-    position:absolute; bottom:16px; left:50%; transform:translateX(-50%);
-    background:#000000cc; border:1px solid #88aaff33;
-    backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-    border-radius:14px; padding:16px 20px; text-align:center;
-    width:min(92vw,370px); animation:fadeSlideUp .8s ease 1s both;
-  }
-  .float-prompt p { color:#aabfe0; font-size:clamp(.76rem,3vw,.86rem); margin-bottom:14px; line-height:1.5; }
+/* ═══════════════════════════════════════════════
+   PLANET INFO BOTTOM SHEET
+═══════════════════════════════════════════════ */
+#infoSheet {
+  position: fixed; inset: 0; z-index: 200;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: #00000077;
+  backdrop-filter: blur(5px); -webkit-backdrop-filter: blur(5px);
+  animation: sheetBgIn .25s ease;
+  touch-action: manipulation;
+}
+#infoSheet.hidden { display: none; }
+@keyframes sheetBgIn { from { opacity: 0; } to { opacity: 1; } }
+#infoCard {
+  background: linear-gradient(155deg, #0d1440 0%, #040810 100%);
+  border: 1px solid #88aaff22;
+  border-radius: 22px 22px 0 0;
+  padding: 26px 20px max(36px, env(safe-area-inset-bottom));
+  width: 100%; max-width: 560px;
+  max-height: 75vh; overflow-y: auto;
+  animation: sheetIn .38s cubic-bezier(.16,1,.3,1) both;
+  -webkit-overflow-scrolling: touch;
+}
+@keyframes sheetIn {
+  from { transform: translateY(100%); }
+  to   { transform: translateY(0); }
+}
+.sheet-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 18px;
+}
+#sheetPlanetName {
+  font-family: 'Orbitron', monospace;
+  font-size: clamp(1.2rem, 5.5vw, 1.8rem); font-weight: 700;
+}
+.sheet-close {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: #ffffff0f; border: 1px solid #ffffff1a;
+  color: #fff; font-size: 1.1rem;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; flex-shrink: 0;
+  touch-action: manipulation;
+  -webkit-appearance: none;
+}
+.sheet-close:active { background: #ffffff22; }
+.sheet-stats {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 10px; margin-bottom: 14px;
+}
+.sheet-stat {
+  background: #ffffff06; border-radius: 10px; padding: 12px 14px;
+}
+.sheet-stat-label {
+  font-size: clamp(.56rem, 2.2vw, .67rem);
+  color: #88aaff77; text-transform: uppercase; letter-spacing: .08em;
+  margin-bottom: 5px;
+}
+.sheet-stat-value {
+  font-size: clamp(.78rem, 3.2vw, .92rem); font-weight: 600; color: #dce8ff;
+}
+.sheet-fact {
+  background: #88aaff08; border-left: 3px solid #88aaff33;
+  border-radius: 0 8px 8px 0; padding: 12px 14px;
+  font-size: clamp(.76rem, 3vw, .87rem); color: #aac4e0; line-height: 1.65;
+}
 
-  /* ── PLANET INFO ── */
-  .info-overlay {
-    position:fixed; inset:0; background:#00000077;
-    backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
-    z-index:100; display:flex; align-items:flex-end; justify-content:center;
-    animation:fadeIn .25s ease;
-  }
-  .info-overlay.hidden { display:none; }
-  @keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
-  .info-card {
-    background:linear-gradient(160deg,#0b1030,#050818); border:1px solid #88aaff33;
-    border-radius:22px 22px 0 0; padding:26px 20px 40px;
-    width:100%; max-width:540px;
-    animation:slideUp .36s cubic-bezier(.16,1,.3,1) forwards; max-height:78vh; overflow-y:auto;
-  }
-  @keyframes slideUp { from{transform:translateY(100%);} to{transform:translateY(0);} }
-  .info-card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
-  #infoName { font-family:'Orbitron',monospace; font-size:clamp(1.2rem,5.5vw,1.8rem); font-weight:700; }
-  .info-close {
-    background:#ffffff11; border:1px solid #ffffff22; color:#fff;
-    width:40px; height:40px; border-radius:50%; cursor:pointer; font-size:1rem;
-    display:flex; align-items:center; justify-content:center; flex-shrink:0; -webkit-appearance:none;
-  }
-  .info-close:active { background:#ffffff33; }
-  .info-stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px; }
-  .info-stat { background:#ffffff07; border-radius:10px; padding:12px 13px; }
-  .info-stat-label { font-size:clamp(.58rem,2.3vw,.68rem); color:#88aaff88; text-transform:uppercase; letter-spacing:.08em; margin-bottom:4px; }
-  .info-stat-value { font-size:clamp(.8rem,3.3vw,.93rem); font-weight:600; color:#dde8ff; }
-  .info-fact {
-    background:#88aaff09; border-left:3px solid #88aaff44;
-    border-radius:0 8px 8px 0; padding:12px 14px;
-    font-size:clamp(.78rem,3vw,.87rem); color:#aabfe0; line-height:1.65;
-  }
+/* ═══════════════════════════════════════════════
+   SCENE 4 — OBSERVABLE UNIVERSE
+═══════════════════════════════════════════════ */
+#scene-universe {
+  background: #000;
+  justify-content: center;
+}
+.universe-inner {
+  display: flex; flex-direction: column;
+  align-items: center; gap: 26px;
+  padding: 20px;
+}
+#univSphere {
+  width: clamp(240px, min(75vw, 72vh), 370px);
+  height: clamp(240px, min(75vw, 72vh), 370px);
+  border-radius: 50%; flex-shrink: 0;
+  background: radial-gradient(circle at 38% 38%,
+    #ffffff06 0%, #3333cc0f 20%, #220044 42%, #110022 65%, #040010 85%, #000 100%);
+  box-shadow: 0 0 80px #4444ff1a, 0 0 160px #33003388,
+              inset 0 0 80px #00000066;
+  position: relative; overflow: hidden;
+  animation: univPulse 9s ease-in-out infinite;
+}
+@keyframes univPulse {
+  0%, 100% { box-shadow: 0 0 80px #4444ff1a, 0 0 160px #33003388; }
+  50%       { box-shadow: 0 0 120px #6666ff33, 0 0 240px #440066aa; }
+}
+.g-cluster {
+  position: absolute; border-radius: 50%;
+  background: radial-gradient(circle, #ffffff55, transparent 70%);
+  animation: gFloat var(--d) ease-in-out infinite alternate;
+}
+@keyframes gFloat {
+  from { transform: translate(0,0) scale(.9); opacity: .3; }
+  to   { transform: translate(var(--gx),var(--gy)) scale(1.15); opacity: .7; }
+}
+.u-earth-dot {
+  position: absolute; bottom: 23%; right: 27%;
+  width: 5px; height: 5px;
+  background: #44aaff; border-radius: 50%;
+  box-shadow: 0 0 8px #44aaff;
+  animation: udot 2.2s ease-in-out infinite;
+}
+@keyframes udot { 0%,100%{transform:scale(1);opacity:1;} 50%{transform:scale(2.4);opacity:.5;} }
+.u-here-label {
+  position: absolute; bottom: calc(23% + 10px); right: calc(27% - 30px);
+  font-size: clamp(6px, 1.8vw, 9px); color: #44aaff;
+  white-space: nowrap; letter-spacing: .07em;
+}
+.univ-text {
+  text-align: center; max-width: min(88vw, 460px);
+  animation: cardIn .9s ease .5s both;
+}
+.univ-text h2 {
+  font-family: 'Orbitron', monospace;
+  font-size: clamp(.88rem, 3.8vw, 1.2rem);
+  margin-bottom: 10px; letter-spacing: .06em;
+}
+.univ-text p {
+  color: #8899bb; font-size: clamp(.74rem, 3vw, .88rem); line-height: 1.8;
+}
 
-  /* ── UNIVERSE ── */
-  #scene-universe { background:#000; }
-  .universe-wrap { display:flex; flex-direction:column; align-items:center; gap:24px; padding:16px 20px; }
-  .universe-sphere {
-    width:min(76vw,76vh,360px); height:min(76vw,76vh,360px); border-radius:50%;
-    background:radial-gradient(circle at 40% 40%,#ffffff07 0%,#4444ff11 22%,#220044 42%,#110022 62%,#050010 82%,#000 100%);
-    box-shadow:0 0 70px #4444ff22,0 0 140px #22004488,inset 0 0 70px #00000077;
-    position:relative; overflow:hidden; flex-shrink:0;
-    animation:universePulse 8s ease-in-out infinite;
-  }
-  @keyframes universePulse {
-    0%,100% { box-shadow:0 0 70px #4444ff22,0 0 140px #22004488; }
-    50%      { box-shadow:0 0 110px #6666ff44,0 0 220px #330055bb; }
-  }
-  .galaxy-cluster {
-    position:absolute; border-radius:50%;
-    background:radial-gradient(circle,#ffffff44,transparent);
-    animation:clusterFloat var(--d) ease-in-out infinite alternate;
-  }
-  @keyframes clusterFloat {
-    from { transform:translate(0,0) scale(1); opacity:.35; }
-    to   { transform:translate(var(--tx),var(--ty)) scale(1.2); opacity:.75; }
-  }
-  .earth-dot {
-    position:absolute; bottom:22%; right:26%;
-    width:5px; height:5px; background:#4af; border-radius:50%;
-    box-shadow:0 0 8px #4af; animation:dotPulse 2s ease-in-out infinite;
-  }
-  @keyframes dotPulse { 0%,100%{transform:scale(1);opacity:1;} 50%{transform:scale(2.2);opacity:.55;} }
-  .you-are-here {
-    position:absolute; bottom:calc(22% + 9px); right:calc(26% - 26px);
-    font-size:clamp(6px,1.8vw,9px); color:#4af; white-space:nowrap; letter-spacing:.08em;
-  }
-  .universe-text { text-align:center; max-width:min(90vw,460px); animation:fadeSlideUp .9s ease .4s both; padding:0 8px; }
-  .universe-text h2 { font-family:'Orbitron',monospace; font-size:clamp(.9rem,3.8vw,1.2rem); margin-bottom:10px; letter-spacing:.06em; }
-  .universe-text p { color:#8899bb; font-size:clamp(.76rem,3vw,.88rem); line-height:1.75; }
-
-  #zoomOverlay { position:fixed; inset:0; background:#000; z-index:200; opacity:0; pointer-events:none; transition:opacity .5s ease; }
-  #zoomOverlay.active { opacity:1; pointer-events:all; }
+/* ═══════════════════════════════════════════════
+   TRANSITION OVERLAY
+═══════════════════════════════════════════════ */
+#transOverlay {
+  position: fixed; inset: 0;
+  background: #000; z-index: 500;
+  opacity: 0; pointer-events: none;
+  transition: opacity .5s ease;
+}
+#transOverlay.on { opacity: 1; pointer-events: all; }
 </style>
 </head>
 <body>
 
+<!-- Stars -->
 <div id="stars"></div>
-<div id="zoomOverlay"></div>
 
-<!-- SCENE 1: LAUNCH -->
+<!-- Transition overlay -->
+<div id="transOverlay"></div>
+
+<!-- ═══ SCENE 1: LAUNCH ═══ -->
 <div class="scene" id="scene-launch">
-  <div class="launch-title">
+  <div class="launch-header">
     <h1>KNOWN SPACE</h1>
-    <p>A journey through the observable universe</p>
-    <div class="drag-hint">↓ &nbsp;pull the rocket down to launch&nbsp; ↓</div>
+    <p class="sub">A journey through the observable universe</p>
+    <p class="hint">↓ &nbsp;Drag the rocket DOWN to launch&nbsp; ↓</p>
   </div>
 
-  <div class="rocket-area">
-    <!-- charge bar -->
-    <div class="charge-wrap" id="chargeWrap">
-      <div id="chargeFill"></div>
-    </div>
-
+  <div class="launch-stage">
+    <div id="chargeLabel" class="visible" style="opacity:0">CHARGE</div>
+    <div id="chargeBar"><div id="chargeFill"></div></div>
     <div class="ground"></div>
     <div class="launchpad"></div>
-
-    <div id="launchGestureZone" aria-label="Pull down to launch" role="button">
-      <div class="launch-touch-ring"></div>
-      <div class="launch-status" id="launchStatus">Touch here and pull down</div>
+    <div id="smoke"></div>
+    <div id="rocket">
+      <div class="r-nose"></div>
+      <div class="r-body">
+        <div class="r-window"></div>
+      </div>
+      <div class="r-flame" id="rFlame"></div>
     </div>
-
-    <div id="rocketWrap" aria-hidden="true">
-      <div class="rocket-nose"></div>
-      <div class="rocket-body"></div>
-      <div class="rocket-flame-idle" id="idleFlame"></div>
-    </div>
-
-    <div class="smoke-ring" id="smoke"></div>
-    <button class="skip-launch-btn" id="skipLaunchBtn" type="button">Skip launch</button>
   </div>
 </div>
 
-<!-- SCENE 2: SPACE -->
+<!-- ═══ SCENE 2: SPACE ═══ -->
 <div class="scene hidden" id="scene-space">
-  <div class="earth-globe"></div>
-  <div class="shuttle-float">🚀</div>
-  <div class="prompt-card">
+  <div class="earth-orb"></div>
+  <div class="floating-rocket">🚀</div>
+  <div class="glass-card">
     <h2>You've entered space.</h2>
-    <p>Earth drifts behind you. The silence of the cosmos stretches in every direction. Ready to explore our Solar System?</p>
+    <p>Earth drifts silently behind you. The cosmos stretches endlessly in every direction. Ready to explore our Solar System?</p>
     <div class="btn-row">
-      <button class="btn-primary" id="btnGoSolar">Explore Solar System →</button>
+      <button class="btn btn-primary" id="btnSolar">Explore Solar System →</button>
     </div>
   </div>
 </div>
 
-<!-- SCENE 3: SOLAR SYSTEM -->
+<!-- ═══ SCENE 3: SOLAR SYSTEM ═══ -->
 <div class="scene hidden" id="scene-solar">
-  <div class="solar-header">Our Solar System</div>
+  <div class="solar-label">Our Solar System — Tap a Planet</div>
   <div id="solarSystem"></div>
-  <div class="float-prompt" id="floatPrompt">
-    <p>Ready to see the full Observable Universe?</p>
+  <div id="solarPrompt">
+    <p>You've explored the Solar System. Ready to see the full Observable Universe?</p>
     <div class="btn-row">
-      <button class="btn-primary" id="btnGoUniverse">Zoom out →</button>
-      <button class="btn-ghost" id="btnStay">Stay here</button>
+      <button class="btn btn-primary" id="btnUniverse">Zoom to Universe →</button>
+      <button class="btn btn-ghost" id="btnStay">Keep Exploring</button>
     </div>
   </div>
 </div>
 
-<!-- SCENE 4: UNIVERSE -->
+<!-- ═══ SCENE 4: UNIVERSE ═══ -->
 <div class="scene hidden" id="scene-universe">
-  <div class="universe-wrap">
-    <div class="universe-sphere" id="universeSphere"></div>
-    <div class="universe-text">
+  <div class="universe-inner">
+    <div id="univSphere"></div>
+    <div class="univ-text">
       <h2>The Observable Universe</h2>
-      <p>93 billion light-years across &middot; 2 trillion galaxies &middot; 13.8 billion years old.<br><br>Every star you've ever seen sits inside the Milky Way — one of those 2 trillion galaxies.</p>
+      <p>
+        93 billion light-years across<br>
+        2 trillion galaxies &nbsp;&middot;&nbsp; 13.8 billion years old<br><br>
+        Every star you have ever seen with the naked eye<br>
+        is inside the Milky Way — one of those 2 trillion galaxies.
+      </p>
     </div>
   </div>
 </div>
 
-<!-- PLANET INFO -->
-<div class="info-overlay hidden" id="infoOverlay">
-  <div class="info-card">
-    <div class="info-card-header">
-      <div id="infoName"></div>
-      <button class="info-close" id="infoClose">✕</button>
+<!-- ═══ PLANET INFO SHEET ═══ -->
+<div id="infoSheet" class="hidden">
+  <div id="infoCard">
+    <div class="sheet-header">
+      <div id="sheetPlanetName">Planet</div>
+      <button class="sheet-close" id="sheetClose">✕</button>
     </div>
-    <div class="info-stats">
-      <div class="info-stat"><div class="info-stat-label">Distance from Sun</div><div class="info-stat-value" id="infoDistance"></div></div>
-      <div class="info-stat"><div class="info-stat-label">Size vs Earth</div><div class="info-stat-value" id="infoSize"></div></div>
-      <div class="info-stat"><div class="info-stat-label">Temperature</div><div class="info-stat-value" id="infoTemp"></div></div>
-      <div class="info-stat"><div class="info-stat-label">Moons</div><div class="info-stat-value" id="infoMoons"></div></div>
+    <div class="sheet-stats">
+      <div class="sheet-stat">
+        <div class="sheet-stat-label">Distance from Sun</div>
+        <div class="sheet-stat-value" id="sd-dist"></div>
+      </div>
+      <div class="sheet-stat">
+        <div class="sheet-stat-label">Size vs Earth</div>
+        <div class="sheet-stat-value" id="sd-size"></div>
+      </div>
+      <div class="sheet-stat">
+        <div class="sheet-stat-label">Temperature</div>
+        <div class="sheet-stat-value" id="sd-temp"></div>
+      </div>
+      <div class="sheet-stat">
+        <div class="sheet-stat-label">Known Moons</div>
+        <div class="sheet-stat-value" id="sd-moons"></div>
+      </div>
     </div>
-    <div class="info-fact" id="infoFact"></div>
+    <div class="sheet-fact" id="sd-fact"></div>
   </div>
 </div>
 
 <script>
-/* ── STARS ── */
-const starsEl = document.getElementById('stars');
-for (let i=0;i<180;i++){
-  const s=document.createElement('div'); s.className='star';
-  const sz=Math.random()*2+0.4;
-  s.style.cssText=`width:${sz}px;height:${sz}px;top:${Math.random()*100}%;left:${Math.random()*100}%;--d:${(Math.random()*4+2).toFixed(1)}s;animation-delay:${(Math.random()*5).toFixed(1)}s;opacity:${(Math.random()*.5+.1).toFixed(2)}`;
-  starsEl.appendChild(s);
-}
+'use strict';
 
-/* ── DRAG TO LAUNCH: robust mobile + desktop input ── */
-const rocketWrap  = document.getElementById('rocketWrap');
-const launchZone  = document.getElementById('launchGestureZone');
-const skipLaunchBtn = document.getElementById('skipLaunchBtn');
-const chargeWrap  = document.getElementById('chargeWrap');
-const chargeFill  = document.getElementById('chargeFill');
-const idleFlame   = document.getElementById('idleFlame');
-const smokeEl     = document.getElementById('smoke');
-const launchStatus = document.getElementById('launchStatus');
-
-const PULL_THRESHOLD = 82;   // mobile-friendly threshold in px
-let dragging = false;
-let launched = false;
-let startY = 0;
-let currentPull = 0;
-let activePointerId = null;
-let dragStartedAt = 0;
-
-function safePrevent(e){
-  if (e && e.cancelable) e.preventDefault();
-}
-function clientYFromEvent(e){
-  if (e.touches && e.touches.length) return e.touches[0].clientY;
-  if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0].clientY;
-  return e.clientY;
-}
-function setLaunchStatus(text){
-  if (launchStatus) launchStatus.textContent = text;
-}
-function resetCharge(){
-  currentPull = 0;
-  chargeFill.style.width = '0%';
-  chargeFill.classList.remove('ready');
-  idleFlame.style.borderTopWidth = '0px';
-  chargeWrap.classList.remove('visible');
-  setLaunchStatus('Touch here and pull down');
-}
-function renderPull(pullPx){
-  currentPull = Math.max(0, pullPx);
-  const visual = Math.min(currentPull * 0.58, 64);
-  const pct = Math.min(currentPull / PULL_THRESHOLD * 100, 100);
-
-  rocketWrap.style.transform = `translateX(-50%) translateY(${visual}px)`;
-  chargeFill.style.width = pct + '%';
-
-  const flameH = Math.round(pct * 0.36);
-  idleFlame.style.borderTopWidth = flameH + 'px';
-  idleFlame.style.borderTopColor = pct < 60 ? '#ff6600' : '#ffcc00';
-  idleFlame.style.borderTopStyle = 'solid';
-
-  if (pct >= 100) {
-    chargeFill.classList.add('ready');
-    setLaunchStatus('Release to launch');
-  } else {
-    chargeFill.classList.remove('ready');
-    setLaunchStatus(`Charging ${Math.round(pct)}%`);
+/* ══════════════════════════════════════════════════
+   STARS
+══════════════════════════════════════════════════ */
+(function spawnStars() {
+  const container = document.getElementById('stars');
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < 200; i++) {
+    const s = document.createElement('div');
+    s.className = 'star';
+    const sz = Math.random() * 2.2 + 0.4;
+    s.style.cssText = [
+      'width:'  + sz + 'px',
+      'height:' + sz + 'px',
+      'top:'    + (Math.random() * 100) + '%',
+      'left:'   + (Math.random() * 100) + '%',
+      '--d:'    + (Math.random() * 4 + 2).toFixed(1) + 's',
+      '--del:'  + (Math.random() * 6).toFixed(1) + 's',
+      'opacity:' + (Math.random() * 0.5 + 0.1).toFixed(2),
+    ].join(';');
+    frag.appendChild(s);
   }
-}
-function beginDrag(e){
-  if (launched || dragging) return;
-  safePrevent(e);
-  dragging = true;
-  dragStartedAt = Date.now();
-  startY = clientYFromEvent(e);
-  currentPull = 0;
-  activePointerId = e.pointerId ?? null;
+  container.appendChild(frag);
+})();
 
-  rocketWrap.classList.add('pulling');
-  chargeWrap.classList.add('visible');
-  setLaunchStatus('Pull down');
+/* ══════════════════════════════════════════════════
+   SCENE MANAGER
+══════════════════════════════════════════════════ */
+const transOverlay = document.getElementById('transOverlay');
 
-  // Critical for mobile: keep receiving move/end events even when the finger
-  // leaves the small rocket/gesture area inside Streamlit's iframe.
-  try {
-    if (e.pointerId !== undefined && launchZone.setPointerCapture) {
-      launchZone.setPointerCapture(e.pointerId);
-    }
-  } catch (_) {}
-}
-function moveDrag(e){
-  if (!dragging || launched) return;
-  if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
-  safePrevent(e);
-  renderPull(clientYFromEvent(e) - startY);
-}
-function finishDrag(e){
-  if (!dragging || launched) return;
-  if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
-  safePrevent(e);
-  dragging = false;
-  activePointerId = null;
-  rocketWrap.classList.remove('pulling');
-
-  try {
-    if (e.pointerId !== undefined && launchZone.releasePointerCapture) {
-      launchZone.releasePointerCapture(e.pointerId);
-    }
-  } catch (_) {}
-
-  if (currentPull >= PULL_THRESHOLD) {
-    launchRocket();
-  } else {
-    rocketWrap.style.transition = 'transform .4s cubic-bezier(.34,1.56,.64,1)';
-    rocketWrap.style.transform  = 'translateX(-50%) translateY(0)';
-    setTimeout(()=>{ rocketWrap.style.transition=''; }, 420);
-    resetCharge();
-  }
-}
-function cancelDrag(e){
-  if (!dragging || launched) return;
-  dragging = false;
-  activePointerId = null;
-  rocketWrap.classList.remove('pulling');
-  rocketWrap.style.transition = 'transform .28s ease-out';
-  rocketWrap.style.transform  = 'translateX(-50%) translateY(0)';
-  setTimeout(()=>{ rocketWrap.style.transition=''; }, 300);
-  resetCharge();
-}
-function launchRocket(){
-  if (launched) return;
-  launched = true;
-  dragging = false;
-  chargeWrap.classList.remove('visible');
-  launchZone.style.pointerEvents = 'none';
-  if (skipLaunchBtn) skipLaunchBtn.style.display = 'none';
-  rocketWrap.style.transition = '';
-  rocketWrap.style.transform = '';
-  rocketWrap.classList.add('launching');
-  smokeEl.classList.add('active');
-  setLaunchStatus('Launching');
-  setTimeout(()=> transition('scene-space', 340), 2500);
-}
-
-// Primary path: Pointer Events cover touch, mouse, pen on modern iOS/Android/desktop.
-launchZone.addEventListener('pointerdown', beginDrag, {passive:false});
-window.addEventListener('pointermove', moveDrag, {passive:false});
-window.addEventListener('pointerup', finishDrag, {passive:false});
-window.addEventListener('pointercancel', cancelDrag, {passive:false});
-window.addEventListener('lostpointercapture', cancelDrag, {passive:false});
-
-// Fallback path for older WebViews that do not fully support Pointer Events.
-if (!window.PointerEvent) {
-  launchZone.addEventListener('touchstart', beginDrag, {passive:false});
-  window.addEventListener('touchmove', moveDrag, {passive:false});
-  window.addEventListener('touchend', finishDrag, {passive:false});
-  window.addEventListener('touchcancel', cancelDrag, {passive:false});
-  launchZone.addEventListener('mousedown', beginDrag, {passive:false});
-  window.addEventListener('mousemove', moveDrag, {passive:false});
-  window.addEventListener('mouseup', finishDrag, {passive:false});
-}
-
-// Accessibility / escape hatch. This does not replace drag; it prevents users
-// from getting blocked if a browser still interferes with drag in an iframe.
-skipLaunchBtn.addEventListener('click', (e)=>{ safePrevent(e); launchRocket(); });
-launchZone.addEventListener('keydown', (e)=>{
-  if (e.key === 'Enter' || e.key === ' ') { safePrevent(e); launchRocket(); }
-});
-
-/* ── PLANET DATA ── */
-const planets = [
-  { name:'Mercury', color:'#b5b5b5', relSize:.38, orbitFrac:.16, speed:4.7,  distance:'57.9M km',  sizeRel:'0.38× Earth', temp:'-180 to 430°C', moons:'0',   fact:'Mercury has no atmosphere, so temperatures swing wildly — scorching by day and freezing by night.' },
-  { name:'Venus',   color:'#e8c56a', relSize:.95, orbitFrac:.22, speed:3.5,  distance:'108.2M km', sizeRel:'0.95× Earth', temp:'465°C avg',      moons:'0',   fact:'Venus has the thickest atmosphere in the Solar System — crushing pressure 90x Earth\'s, with perpetual acid clouds.' },
-  { name:'Earth',   color:'#3a7bd5', relSize:1,   orbitFrac:.28, speed:2.9,  distance:'149.6M km', sizeRel:'1x (home)',   temp:'15°C avg',       moons:'1',   fact:'The only known planet in the universe to harbour life — from deep-sea vents to the highest mountain peaks.' },
-  { name:'Mars',    color:'#c1440e', relSize:.53, orbitFrac:.34, speed:2.4,  distance:'227.9M km', sizeRel:'0.53× Earth', temp:'-60°C avg',      moons:'2',   fact:'Olympus Mons on Mars is the tallest volcano in the Solar System — nearly 3x the height of Mount Everest.' },
-  { name:'Jupiter', color:'#c88b3a', relSize:2.8, orbitFrac:.44, speed:1.3,  distance:'778.5M km', sizeRel:'11.2× Earth', temp:'-110°C clouds',  moons:'95',  fact:'Jupiter\'s Great Red Spot is a storm raging for 350+ years, wider than Earth itself.' },
-  { name:'Saturn',  color:'#e4d191', relSize:2.4, orbitFrac:.56, speed:.97,  distance:'1.43B km',  sizeRel:'9.45× Earth', temp:'-140°C',         moons:'146', fact:'Saturn\'s rings span 282,000 km but are only a few hundred metres thick, made of billions of ice and rock fragments.', ring:true },
-  { name:'Uranus',  color:'#7de8e8', relSize:1.9, orbitFrac:.68, speed:.68,  distance:'2.87B km',  sizeRel:'4× Earth',    temp:'-195°C',         moons:'27',  fact:'Uranus rotates on its side with a 98 degree tilt — its poles experience 42 years of continuous sunlight or darkness.' },
-  { name:'Neptune', color:'#3f54ba', relSize:1.8, orbitFrac:.80, speed:.54,  distance:'4.5B km',   sizeRel:'3.88× Earth', temp:'-200°C',         moons:'16',  fact:'Neptune has the fastest winds in the Solar System — up to 2,100 km/h, faster than the speed of sound on Earth.' },
-];
-
-/* ── BUILD SOLAR SYSTEM ── */
-function buildSolarSystem(){
-  const solar=document.getElementById('solarSystem');
-  solar.innerHTML='';
-  document.querySelectorAll('style[data-orb]').forEach(el=>el.remove());
-  const vw=window.innerWidth,vh=window.innerHeight;
-  const size=Math.min(vw*.92,vh*.58,500);
-  solar.style.width=size+'px'; solar.style.height=size+'px';
-  const cx=size/2, sunSize=Math.max(16,size*.072);
-  const sun=document.createElement('div'); sun.className='sun';
-  sun.style.cssText=`width:${sunSize}px;height:${sunSize}px;top:${cx-sunSize/2}px;left:${cx-sunSize/2}px;`;
-  solar.appendChild(sun);
-
-  planets.forEach((p,i)=>{
-    const orbitR=size*p.orbitFrac/2;
-    const pxSize=Math.max(9,Math.round(sunSize*.4*p.relSize));
-    const orb=document.createElement('div'); orb.className='orbit';
-    orb.style.cssText=`width:${orbitR*2}px;height:${orbitR*2}px;top:${cx-orbitR}px;left:${cx-orbitR}px;`;
-    solar.appendChild(orb);
-    const sa=(i/planets.length)*360;
-    const kf=document.createElement('style'); kf.setAttribute('data-orb','1');
-    kf.textContent=`@keyframes orb${i}{from{transform:rotate(${sa}deg) translateX(${orbitR}px) rotate(-${sa}deg);}to{transform:rotate(${sa+360}deg) translateX(${orbitR}px) rotate(-${sa+360}deg);}}`;
-    document.head.appendChild(kf);
-    const wrap=document.createElement('div'); wrap.className='planet-wrap';
-    wrap.style.cssText=`top:${cx}px;left:${cx}px;animation:orb${i} ${(11/p.speed).toFixed(1)}s linear infinite;`;
-    const planet=document.createElement('div'); planet.className='planet';
-    planet.style.cssText=`width:${pxSize}px;height:${pxSize}px;background:radial-gradient(circle at 35% 35%,${lighten(p.color)},${p.color},${darken(p.color)});box-shadow:0 0 ${pxSize*.5}px ${p.color}55;margin-left:-${pxSize/2}px;margin-top:-${pxSize/2}px;`;
-    const hit=document.createElement('div');
-    hit.style.cssText='position:absolute;inset:-14px;border-radius:50%;cursor:pointer;z-index:2;';
-    planet.appendChild(hit);
-    const lbl=document.createElement('div'); lbl.className='planet-label'; lbl.textContent=p.name;
-    planet.appendChild(lbl);
-    if(p.ring){const r=document.createElement('div');r.className='saturn-ring';planet.appendChild(r);}
-    wrap.appendChild(planet); solar.appendChild(wrap);
-    const openInfo=e=>{e.preventDefault();e.stopPropagation();showInfo(p,wrap);};
-    hit.addEventListener('pointerup',openInfo,{passive:false});
-    hit.addEventListener('click',openInfo,{passive:false});
-  });
-}
-
-function lighten(hex){return '#'+hex.slice(1).replace(/../g,m=>Math.min(255,parseInt(m,16)+45).toString(16).padStart(2,'0'));}
-function darken(hex) {return '#'+hex.slice(1).replace(/../g,m=>Math.max(0,  parseInt(m,16)-40).toString(16).padStart(2,'0'));}
-
-/* ── UNIVERSE ── */
-function buildUniverse(){
-  const sphere=document.getElementById('universeSphere');
-  for(let i=0;i<55;i++){
-    const cl=document.createElement('div'); cl.className='galaxy-cluster';
-    const s=Math.random()*26+4;
-    cl.style.cssText=`width:${s}px;height:${s}px;top:${Math.random()*83+5}%;left:${Math.random()*83+5}%;--d:${(Math.random()*6+4).toFixed(1)}s;--tx:${(Math.random()*16-8).toFixed(0)}px;--ty:${(Math.random()*16-8).toFixed(0)}px;animation-delay:${(Math.random()*6).toFixed(1)}s;`;
-    sphere.appendChild(cl);
-  }
-  const dot=document.createElement('div'); dot.className='earth-dot';
-  const yah=document.createElement('div'); yah.className='you-are-here'; yah.textContent='← you are here';
-  sphere.appendChild(dot); sphere.appendChild(yah);
-}
-buildUniverse();
-
-/* ── SCENE TRANSITIONS ── */
-const overlay=document.getElementById('zoomOverlay');
-function showScene(id){
-  document.querySelectorAll('.scene').forEach(s=>s.classList.add('hidden'));
-  document.getElementById(id).classList.remove('hidden');
-}
-function transition(toScene,delay=560){
-  overlay.classList.add('active');
-  setTimeout(()=>{
-    showScene(toScene);
-    if(toScene==='scene-solar') buildSolarSystem();
-    overlay.classList.remove('active');
+function goToScene(id, delay) {
+  delay = delay || 500;
+  transOverlay.classList.add('on');
+  setTimeout(function() {
+    document.querySelectorAll('.scene').forEach(function(s) {
+      s.classList.add('hidden');
+    });
+    const target = document.getElementById(id);
+    target.classList.remove('hidden');
+    if (id === 'scene-solar') buildSolar();
+    if (id === 'scene-universe') buildUniverse();
+    transOverlay.classList.remove('on');
   }, delay);
 }
 
-document.getElementById('btnGoSolar').addEventListener('click',()=>transition('scene-solar'));
-document.getElementById('btnGoUniverse').addEventListener('click',()=>transition('scene-universe',760));
-document.getElementById('btnStay').addEventListener('click',()=>{document.getElementById('floatPrompt').style.display='none';});
-window.addEventListener('resize',()=>{if(!document.getElementById('scene-solar').classList.contains('hidden'))buildSolarSystem();});
+/* ══════════════════════════════════════════════════
+   DRAG-TO-LAUNCH
+   Uses Pointer Events — works on both touch and mouse
+   with no platform-specific branching needed.
+══════════════════════════════════════════════════ */
+(function initLaunch() {
+  const rocket     = document.getElementById('rocket');
+  const rFlame     = document.getElementById('rFlame');
+  const chargeBar  = document.getElementById('chargeBar');
+  const chargeFill = document.getElementById('chargeFill');
+  const chargeLabel= document.getElementById('chargeLabel');
+  const smokeEl    = document.getElementById('smoke');
 
-/* ── PLANET INFO ── */
-let activeWrap=null;
-function showInfo(p,wrap){
-  if(activeWrap) activeWrap.style.animationPlayState='running';
-  activeWrap=wrap; wrap.style.animationPlayState='paused';
-  document.getElementById('infoName').textContent=p.name;
-  document.getElementById('infoName').style.color=p.color;
-  document.getElementById('infoDistance').textContent=p.distance;
-  document.getElementById('infoSize').textContent=p.sizeRel;
-  document.getElementById('infoTemp').textContent=p.temp;
-  document.getElementById('infoMoons').textContent=p.moons;
-  document.getElementById('infoFact').textContent=p.fact;
-  document.getElementById('infoOverlay').classList.remove('hidden');
+  const THRESHOLD  = 85;   // px pulled down = full charge
+  const MAX_VISUAL = 58;   // max px rocket moves down on screen
+
+  let active      = false;
+  let launched    = false;
+  let startY      = 0;
+  let currentPull = 0;
+
+  function setRY(px) {
+    rocket.style.setProperty('--ry', px + 'px');
+  }
+
+  function resetDrag() {
+    active      = false;
+    currentPull = 0;
+    chargeBar.classList.remove('visible');
+    chargeLabel.classList.remove('visible');
+    chargeFill.style.width  = '0%';
+    chargeFill.classList.remove('ready');
+    rFlame.style.borderTopWidth = '0px';
+    // spring snap-back
+    rocket.style.transition = 'transform .42s cubic-bezier(.34,1.5,.64,1)';
+    setRY(0);
+    setTimeout(function() { rocket.style.transition = ''; }, 450);
+  }
+
+  function doLaunch() {
+    launched = true;
+    active   = false;
+    chargeBar.classList.remove('visible');
+    chargeLabel.classList.remove('visible');
+    // reset inline transition before adding class
+    rocket.style.transition = '';
+    setRY(0);
+    // small delay so browser applies the reset
+    requestAnimationFrame(function() {
+      requestAnimationFrame(function() {
+        rocket.classList.add('launching');
+        smokeEl.classList.add('active');
+        setTimeout(function() { goToScene('scene-space', 350); }, 2600);
+      });
+    });
+  }
+
+  rocket.addEventListener('pointerdown', function(e) {
+    if (launched) return;
+    active  = true;
+    startY  = e.clientY;
+    rocket.setPointerCapture(e.pointerId);
+    rocket.style.transition = '';
+    chargeBar.classList.add('visible');
+    chargeLabel.classList.add('visible');
+    e.preventDefault();
+  });
+
+  rocket.addEventListener('pointermove', function(e) {
+    if (!active || launched) return;
+    e.preventDefault();
+    const dy = e.clientY - startY;
+    currentPull = Math.max(0, dy);   // only downward drag counts
+
+    // visual displacement — elastic feel
+    const visual = Math.min(currentPull * 0.6, MAX_VISUAL);
+    setRY(visual);
+
+    // charge
+    const pct = Math.min(currentPull / THRESHOLD * 100, 100);
+    chargeFill.style.width = pct + '%';
+    if (pct >= 100) chargeFill.classList.add('ready');
+    else            chargeFill.classList.remove('ready');
+
+    // flame height grows with charge
+    const fh = Math.round(pct * 0.35);
+    rFlame.style.borderTopWidth = fh + 'px';
+    rFlame.style.borderTopStyle = 'solid';
+    rFlame.style.borderTopColor = pct < 55 ? '#ff6611' : '#ffcc00';
+  });
+
+  rocket.addEventListener('pointerup', function(e) {
+    if (!active || launched) return;
+    rocket.releasePointerCapture(e.pointerId);
+    if (currentPull >= THRESHOLD) {
+      doLaunch();
+    } else {
+      resetDrag();
+    }
+  });
+
+  rocket.addEventListener('pointercancel', function(e) {
+    if (active) resetDrag();
+  });
+})();
+
+/* ══════════════════════════════════════════════════
+   SCENE 2 BUTTONS
+══════════════════════════════════════════════════ */
+document.getElementById('btnSolar').addEventListener('click', function() {
+  goToScene('scene-solar', 500);
+});
+
+/* ══════════════════════════════════════════════════
+   PLANET DATA
+══════════════════════════════════════════════════ */
+var PLANETS = [
+  { name:'Mercury', color:'#b8b8b8', relSize:.38, orbit:.16, period:2.4,
+    dist:'57.9M km', size:'0.38x Earth', temp:'-180 to 430C', moons:'0',
+    fact:'Mercury has no atmosphere, so temperatures swing 600 degrees between day and night.' },
+  { name:'Venus',   color:'#e8c96a', relSize:.95, orbit:.22, period:3.8,
+    dist:'108.2M km', size:'0.95x Earth', temp:'465C avg', moons:'0',
+    fact:'Venus is hotter than Mercury despite being farther from the Sun, due to its thick CO2 atmosphere trapping heat.' },
+  { name:'Earth',   color:'#3a7bd5', relSize:1,   orbit:.29, period:5.0,
+    dist:'149.6M km', size:'1x (home)', temp:'15C avg', moons:'1',
+    fact:'Earth is the only known planet in the universe to harbour life — from deep-sea hydrothermal vents to its highest peaks.' },
+  { name:'Mars',    color:'#c1440e', relSize:.53, orbit:.36, period:6.4,
+    dist:'227.9M km', size:'0.53x Earth', temp:'-60C avg', moons:'2',
+    fact:'Olympus Mons on Mars is the tallest volcano in the Solar System, nearly three times the height of Mount Everest.' },
+  { name:'Jupiter', color:'#c88b3a', relSize:2.8, orbit:.47, period:8.5,
+    dist:'778.5M km', size:'11.2x Earth', temp:'-110C clouds', moons:'95',
+    fact:'Jupiter\'s Great Red Spot is a storm larger than Earth that has raged for over 350 years.' },
+  { name:'Saturn',  color:'#e4d48e', relSize:2.4, orbit:.58, period:11,
+    dist:'1.43B km', size:'9.45x Earth', temp:'-140C', moons:'146',
+    fact:'Saturn\'s rings span 282,000 km yet are only a few hundred metres thick, made of billions of ice and rock particles.',
+    ring: true },
+  { name:'Uranus',  color:'#7de8e8', relSize:1.9, orbit:.70, period:14,
+    dist:'2.87B km', size:'4x Earth', temp:'-195C', moons:'27',
+    fact:'Uranus rotates on its side with a 98-degree axial tilt, so its poles experience 42 years of daylight then 42 years of darkness.' },
+  { name:'Neptune', color:'#3f54ba', relSize:1.8, orbit:.83, period:18,
+    dist:'4.5B km', size:'3.88x Earth', temp:'-200C', moons:'16',
+    fact:'Neptune has the fastest winds in the Solar System, reaching 2,100 km/h, faster than the speed of sound on Earth.' },
+];
+
+/* ══════════════════════════════════════════════════
+   SOLAR SYSTEM BUILDER
+══════════════════════════════════════════════════ */
+var _orbKF = [];   // track injected <style> nodes for cleanup
+
+function buildSolar() {
+  var container = document.getElementById('solarSystem');
+  container.innerHTML = '';
+  _orbKF.forEach(function(el) { if (el.parentNode) el.parentNode.removeChild(el); });
+  _orbKF = [];
+
+  var vw   = window.innerWidth;
+  var vh   = window.innerHeight;
+  var size = Math.min(vw * 0.92, vh * 0.60, 510);
+  container.style.width  = size + 'px';
+  container.style.height = size + 'px';
+
+  var cx      = size / 2;
+  var sunSize = Math.max(18, size * 0.075);
+
+  // Sun
+  var sun = document.createElement('div');
+  sun.className = 'sun';
+  sun.style.cssText = [
+    'width:'       + sunSize + 'px',
+    'height:'      + sunSize + 'px',
+    'top:'         + (cx - sunSize / 2) + 'px',
+    'left:'        + (cx - sunSize / 2) + 'px',
+  ].join(';');
+  container.appendChild(sun);
+
+  PLANETS.forEach(function(p, i) {
+    var orbitR = (size * p.orbit) / 2;
+    var pSize  = Math.max(10, Math.round(sunSize * 0.42 * p.relSize));
+
+    // orbit ring
+    var ring = document.createElement('div');
+    ring.className = 'orbit-ring';
+    ring.style.cssText = [
+      'width:'  + (orbitR * 2) + 'px',
+      'height:' + (orbitR * 2) + 'px',
+      'top:'    + (cx - orbitR) + 'px',
+      'left:'   + (cx - orbitR) + 'px',
+    ].join(';');
+    container.appendChild(ring);
+
+    // inject unique keyframe
+    var startDeg = (i / PLANETS.length) * 360;
+    var kfName   = 'orb_' + i + '_' + Date.now();
+    var kfStyle  = document.createElement('style');
+    kfStyle.textContent = '@keyframes ' + kfName + '{' +
+      'from{transform:rotate(' + startDeg + 'deg) translateX(' + orbitR + 'px) rotate(-' + startDeg + 'deg);}' +
+      'to{transform:rotate(' + (startDeg + 360) + 'deg) translateX(' + orbitR + 'px) rotate(-' + (startDeg + 360) + 'deg);}' +
+    '}';
+    document.head.appendChild(kfStyle);
+    _orbKF.push(kfStyle);
+
+    // planet wrapper (orbits)
+    var wrap = document.createElement('div');
+    wrap.className = 'planet-wrap';
+    wrap.style.cssText = [
+      'top:'       + cx + 'px',
+      'left:'      + cx + 'px',
+      'animation:' + kfName + ' ' + p.period.toFixed(1) + 's linear infinite',
+    ].join(';');
+
+    // planet disc
+    var disc = document.createElement('div');
+    disc.className = 'planet';
+    disc.style.cssText = [
+      'width:'       + pSize + 'px',
+      'height:'      + pSize + 'px',
+      'background:'  + 'radial-gradient(circle at 35% 35%,' + lighten(p.color) + ',' + p.color + ',' + darken(p.color) + ')',
+      'box-shadow:'  + '0 0 ' + (pSize * 0.55) + 'px ' + p.color + '66',
+      'margin-left:' + (-pSize / 2) + 'px',
+      'margin-top:'  + (-pSize / 2) + 'px',
+    ].join(';');
+
+    if (p.ring) {
+      var satRing = document.createElement('div');
+      satRing.className = 'saturn-ring';
+      disc.appendChild(satRing);
+    }
+
+    // name label
+    var nameEl = document.createElement('div');
+    nameEl.className = 'planet-name';
+    nameEl.textContent = p.name;
+    disc.appendChild(nameEl);
+
+    // large invisible hit area
+    var hit = document.createElement('div');
+    hit.className = 'planet-hitbox';
+    disc.appendChild(hit);
+
+    wrap.appendChild(disc);
+    container.appendChild(wrap);
+
+    // tap handler — works for both click and touch
+    (function(planet, wrapEl) {
+      function openSheet(e) {
+        e.stopPropagation();
+        e.preventDefault();
+        showPlanetSheet(planet, wrapEl);
+      }
+      hit.addEventListener('click',    openSheet, false);
+      hit.addEventListener('touchend', openSheet, { passive: false });
+    })(p, wrap);
+  });
 }
-const closeInfo=()=>{
-  document.getElementById('infoOverlay').classList.add('hidden');
-  if(activeWrap){activeWrap.style.animationPlayState='running';activeWrap=null;}
-};
-document.getElementById('infoClose').addEventListener('click',closeInfo);
-document.getElementById('infoOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('infoOverlay'))closeInfo();});
+
+function lighten(hex) {
+  return '#' + hex.slice(1).replace(/../g, function(m) {
+    return Math.min(255, parseInt(m, 16) + 48).toString(16).padStart(2, '0');
+  });
+}
+function darken(hex) {
+  return '#' + hex.slice(1).replace(/../g, function(m) {
+    return Math.max(0, parseInt(m, 16) - 38).toString(16).padStart(2, '0');
+  });
+}
+
+window.addEventListener('resize', function() {
+  if (!document.getElementById('scene-solar').classList.contains('hidden')) {
+    buildSolar();
+  }
+});
+
+/* ══════════════════════════════════════════════════
+   PLANET INFO SHEET
+══════════════════════════════════════════════════ */
+var _activePlanetWrap = null;
+
+function showPlanetSheet(p, wrapEl) {
+  // pause orbit
+  if (_activePlanetWrap) _activePlanetWrap.style.animationPlayState = 'running';
+  _activePlanetWrap = wrapEl;
+  wrapEl.style.animationPlayState = 'paused';
+
+  document.getElementById('sheetPlanetName').textContent = p.name;
+  document.getElementById('sheetPlanetName').style.color = p.color;
+  document.getElementById('sd-dist').textContent  = p.dist;
+  document.getElementById('sd-size').textContent  = p.size;
+  document.getElementById('sd-temp').textContent  = p.temp;
+  document.getElementById('sd-moons').textContent = p.moons;
+  document.getElementById('sd-fact').textContent  = p.fact;
+
+  var sheet = document.getElementById('infoSheet');
+  sheet.classList.remove('hidden');
+  // re-trigger animation
+  var card = document.getElementById('infoCard');
+  card.style.animation = 'none';
+  requestAnimationFrame(function() {
+    card.style.animation = '';
+  });
+}
+
+function closeSheet() {
+  document.getElementById('infoSheet').classList.add('hidden');
+  if (_activePlanetWrap) {
+    _activePlanetWrap.style.animationPlayState = 'running';
+    _activePlanetWrap = null;
+  }
+}
+
+document.getElementById('sheetClose').addEventListener('click', closeSheet);
+document.getElementById('infoSheet').addEventListener('click', function(e) {
+  if (e.target === document.getElementById('infoSheet')) closeSheet();
+});
+
+/* ══════════════════════════════════════════════════
+   SCENE 3 BUTTONS
+══════════════════════════════════════════════════ */
+document.getElementById('btnUniverse').addEventListener('click', function() {
+  goToScene('scene-universe', 700);
+});
+document.getElementById('btnStay').addEventListener('click', function() {
+  document.getElementById('solarPrompt').style.display = 'none';
+});
+
+/* ══════════════════════════════════════════════════
+   OBSERVABLE UNIVERSE BUILDER
+══════════════════════════════════════════════════ */
+function buildUniverse() {
+  var sphere = document.getElementById('univSphere');
+  if (sphere.dataset.built) return;
+  sphere.dataset.built = '1';
+
+  var frag = document.createDocumentFragment();
+  for (var i = 0; i < 60; i++) {
+    var cl = document.createElement('div');
+    cl.className = 'g-cluster';
+    var s = Math.random() * 28 + 4;
+    cl.style.cssText = [
+      'width:'  + s + 'px',
+      'height:' + s + 'px',
+      'top:'    + (Math.random() * 84 + 5) + '%',
+      'left:'   + (Math.random() * 84 + 5) + '%',
+      '--d:'    + (Math.random() * 6 + 4).toFixed(1) + 's',
+      '--gx:'   + (Math.random() * 18 - 9).toFixed(0) + 'px',
+      '--gy:'   + (Math.random() * 18 - 9).toFixed(0) + 'px',
+      'animation-delay:' + (Math.random() * 6).toFixed(1) + 's',
+    ].join(';');
+    frag.appendChild(cl);
+  }
+
+  var dot = document.createElement('div'); dot.className = 'u-earth-dot';
+  var lbl = document.createElement('div'); lbl.className = 'u-here-label';
+  lbl.textContent = 'you are here';
+  frag.appendChild(dot); frag.appendChild(lbl);
+  sphere.appendChild(frag);
+}
+
 </script>
 </body>
 </html>"""
 
-components.html(html_content, height=820, scrolling=False)
+components.html(HTML, height=820, scrolling=False)
