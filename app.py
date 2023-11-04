@@ -109,8 +109,14 @@ html_content = """<!DOCTYPE html>
     left:50%; transform:translateX(-50%);
     display:flex; flex-direction:column; align-items:center;
     cursor:grab; touch-action:none; user-select:none;
+    -webkit-user-select:none; -webkit-touch-callout:none;
     z-index:20;
     transition: filter .2s;
+  }
+  /* bigger invisible mobile touch target around the tiny rocket */
+  #rocketWrap::before {
+    content:''; position:absolute; inset:-42px -54px -58px -54px;
+    z-index:-1; border-radius:28px; pointer-events:auto;
   }
   #rocketWrap:active { cursor:grabbing; }
   #rocketWrap.launching {
@@ -462,23 +468,43 @@ const smokeEl     = document.getElementById('smoke');
 
 const PULL_THRESHOLD = 90;   // px pulled down = 100% charge
 let dragging = false, launched = false;
-let startY = 0, currentPull = 0;
+let startY = 0, currentPull = 0, activePointerId = null;
 
-function getY(e){ return e.touches ? e.touches[0].clientY : e.clientY; }
-
-function onDragStart(e){
-  if (launched) return;
-  dragging = true; startY = getY(e);
-  rocketWrap.classList.add('pulling');
-  chargeWrap.classList.add('visible');
-  e.preventDefault();
+function getClientY(e){
+  if (e.touches && e.touches.length) return e.touches[0].clientY;
+  if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0].clientY;
+  return e.clientY;
 }
 
-function onDragMove(e){
+function safePrevent(e){
+  if (e && e.cancelable) e.preventDefault();
+}
+
+function beginLaunchDrag(e){
+  if (launched || dragging) return;
+  safePrevent(e);
+
+  dragging = true;
+  activePointerId = e.pointerId ?? null;
+  startY = getClientY(e);
+  currentPull = 0;
+
+  // Critical on phones: keep receiving move/end events even if the finger leaves the small rocket.
+  if (e.pointerId !== undefined && rocketWrap.setPointerCapture) {
+    try { rocketWrap.setPointerCapture(e.pointerId); } catch (_) {}
+  }
+
+  rocketWrap.classList.add('pulling');
+  chargeWrap.classList.add('visible');
+}
+
+function moveLaunchDrag(e){
   if (!dragging || launched) return;
-  e.preventDefault();
-  const dy = getY(e) - startY;          // positive = pulled down
-  currentPull = Math.max(0, dy);        // only downward counts
+  if (activePointerId !== null && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
+  safePrevent(e);
+
+  const dy = getClientY(e) - startY;     // positive = pulled down
+  currentPull = Math.max(0, dy);         // only downward counts
 
   // elastic: rocket moves down half the pull, capped at 60px
   const visual = Math.min(currentPull * 0.55, 60);
@@ -498,9 +524,13 @@ function onDragMove(e){
   else            chargeFill.classList.remove('ready');
 }
 
-function onDragEnd(e){
+function endLaunchDrag(e){
   if (!dragging || launched) return;
+  if (activePointerId !== null && e && e.pointerId !== undefined && e.pointerId !== activePointerId) return;
+  safePrevent(e);
+
   dragging = false;
+  activePointerId = null;
   rocketWrap.classList.remove('pulling');
 
   if (currentPull >= PULL_THRESHOLD) {
@@ -524,15 +554,23 @@ function onDragEnd(e){
   }
 }
 
-// mouse
-rocketWrap.addEventListener('mousedown',  onDragStart);
-window.addEventListener('mousemove',  onDragMove);
-window.addEventListener('mouseup',    onDragEnd);
+// Pointer Events are more reliable than separate mouse/touch events on mobile browsers.
+if (window.PointerEvent) {
+  rocketWrap.addEventListener('pointerdown', beginLaunchDrag, {passive:false});
+  rocketWrap.addEventListener('pointermove', moveLaunchDrag, {passive:false});
+  rocketWrap.addEventListener('pointerup', endLaunchDrag, {passive:false});
+  rocketWrap.addEventListener('pointercancel', endLaunchDrag, {passive:false});
+} else {
+  // Fallback for very old mobile browsers.
+  rocketWrap.addEventListener('mousedown', beginLaunchDrag);
+  window.addEventListener('mousemove', moveLaunchDrag);
+  window.addEventListener('mouseup', endLaunchDrag);
 
-// touch
-rocketWrap.addEventListener('touchstart', onDragStart, {passive:false});
-window.addEventListener('touchmove',  onDragMove,  {passive:false});
-window.addEventListener('touchend',   onDragEnd);
+  rocketWrap.addEventListener('touchstart', beginLaunchDrag, {passive:false});
+  window.addEventListener('touchmove', moveLaunchDrag, {passive:false});
+  window.addEventListener('touchend', endLaunchDrag, {passive:false});
+  window.addEventListener('touchcancel', endLaunchDrag, {passive:false});
+}
 
 /* ── PLANET DATA ── */
 const planets = [
