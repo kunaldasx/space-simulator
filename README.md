@@ -24,4 +24,4 @@ streamlit run app.py
 6. Click **Deploy** — your public URL will be ready in ~2 minutes
 
 Your app will be live at:
-`[space simulator](https://spacesimulator.streamlit.app/)`
+[space simulator]
