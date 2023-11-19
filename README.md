@@ -4,7 +4,7 @@ A cinematic space exploration experience built with pure HTML and JavaScript.
 Visualizes the Solar System and the Observable Universe directly in your browser.
 No installation required.
 
-🌐 **Live Demo:** https://abhisalunke16-sketch.github.io/space_simulator/
+🌐 **Live Demo:** https://kunaldasx.github.io/space-simulator/
 
 ---
 
@@ -22,7 +22,7 @@ No installation required.
 Simply open `index.html` in any modern browser. No dependencies, no setup.
 
 ```bash
-git clone https://github.com/abhisalunke16-sketch/space_simulator.git
+git clone https://github.com/kunaldasx/space_simulator.git
 cd space_simulator
 open index.html
 ```
@@ -39,15 +39,10 @@ open index.html
 
 ## License
 
-© 2026 Abhishek Salunke. Licensed under CC BY-NC 4.0.
-Non-commercial use only. See LICENSE for details.
+© 2026 Kunal Das.
 
 ---
 
 ## About the Author
 
-Senior Data Engineer specializing in data infrastructure.
-Based in Ottawa, Canada.
-
-🔗 [LinkedIn](https://linkedin.com/in/abhisheksalunke12) · 
-✍️ [Medium](https://medium.com/@abhisheksalunke)
+🔗 [LinkedIn](https://linkedin.com/in/kunaldasx) ·
