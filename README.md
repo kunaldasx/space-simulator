@@ -4,7 +4,13 @@ A cinematic space exploration experience built with pure HTML, CSS, and JavaScri
 Visualizes the Solar System and the Observable Universe directly in your browser.
 No installation or build step required.
 
+## Demo
+
 Live Demo: https://kunaldasx.github.io/space-simulator/
+
+![Known Space solar system view](assets/launch.png)
+![Known Space solar system view](assets/solar-system.png)
+![Known Space solar system view](assets/galaxy.png)
 
 ## Project Structure
 

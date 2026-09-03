@@ -343,11 +343,11 @@
 		kfNodes = [];
 		var vw = window.innerWidth,
 			vh = window.innerHeight;
-		var sz = Math.min(vw * 0.93, vh * 0.6, 520);
+		var sz = Math.min(vw * 0.93, vh * 0.72, 680);
 		el.style.width = sz + "px";
 		el.style.height = sz + "px";
 		var cx = sz / 2,
-			sunSz = Math.max(18, sz * 0.076);
+			sunSz = Math.max(22, sz * 0.095);
 
 		var sun = document.createElement("div");
 		sun.className = "sun-el";
@@ -370,7 +370,7 @@
 
 		PLANETS.forEach(function (p, i) {
 			var or = (sz * p.o) / 2,
-				ps = Math.max(10, Math.round(sunSz * 0.43 * p.r));
+				ps = Math.max(13, Math.round(sunSz * 0.58 * p.r));
 			var ring = document.createElement("div");
 			ring.className = "oring";
 			ring.style.cssText =
